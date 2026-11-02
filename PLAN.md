@@ -138,8 +138,20 @@ with Expected results, a negative control or break-and-restore, evidence checkpo
 - Tracking API: anonymous -> 302 (login); with a bearer token it needs a workspace:
   `X-MLFLOW-WORKSPACE: <project>` (workspace = OpenShift project), else
   `INVALID_PARAMETER_VALUE: Workspace context is required`.
-- Next: trace a tool-calling agent from a workbench (`mlflow.openai.autolog()`), then point EvalHub's
-  `experiment` at MLflow.
+- MLflow authorization is Kubernetes RBAC on virtual resources (`mlflow.kubeflow.org`
+  experiments/datasets/registeredmodels) in the workspace namespace: a workload SA needs a RoleBinding
+  to ClusterRole `mlflow-operator-mlflow-integration` (there are also `-view`/`-edit`).
+- **Agent spike verified:** Job in `ws-models` (image `s2i-minimal-notebook:3.5`, `pip install
+  mlflow==3.14.0 openai`), SA with RoleBindings to `mlflow-operator-mlflow-integration` and to a
+  `get inferenceservices/granite4-tiny` Role; env `MLFLOW_WORKSPACE=ws-models`,
+  `MLFLOW_TRACKING_SERVER_CERT_PATH=<SA service-ca.crt>` (without it: SSLCertVerificationError),
+  `MLFLOW_TRACKING_TOKEN=<SA token>`; OpenAI client to the InferenceService with the SA token and
+  service CA. `mlflow.openai.autolog()` + `@mlflow.trace` agent/tool spans: experiment
+  `weather-agent` created, the model called `get_weather`, answered from the tool result; trace
+  `status OK`, 959 ms, name `agent`. Reading the trace in-process right away fails ("span data is
+  corrupted") because export is async: call `mlflow.flush_trace_async_logging()` first.
+- Spike state reverted afterwards (MLflow CR deleted, DSC back to Removed) so Module 7's live walk
+  starts from the participant's starting point.
 
 ## Status (2026-11-02)
 
