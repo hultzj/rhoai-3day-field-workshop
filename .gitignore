@@ -6,3 +6,4 @@ evidence/
 .playwright-mcp/
 .xreview/
 spike/
+.xreview-archive-*/

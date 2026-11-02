@@ -64,8 +64,14 @@ status:
 verify:
 	GITOPS_NS=$(GITOPS_NS) bash "$(AUTOMATION_DIR)/verify.sh"
 
-# Then the namespaces bootstrap created itself (Argo CD destinations it never owned, e.g. ws-platform);
-# every namespace carrying this lab's part-of label is the lab's (guard-namespaces.sh enforces that).
+# teardown deletes the parent Application (its finalizer cascades to the children), then the operator
+# CSVs this lab's Subscriptions installed: OLM leaves a CSV behind when its Subscription goes, and a
+# leftover CSV blocks the next bootstrap's Subscription (ResolutionFailed). guard-namespaces.sh made
+# sure no one else subscribed to these packages. Last, the namespaces bootstrap created itself
+# (Argo CD destinations such as ws-platform): every namespace with this lab's part-of label is the lab's.
 teardown:
-	oc delete -f "$(AUTOMATION_DIR)/bootstrap.yaml" --ignore-not-found --wait=true
+	@set -euo pipefail; \
+	csvs=$$(oc get subscriptions.operators.coreos.com -A -l app.kubernetes.io/part-of=$(LAB_APP) -o jsonpath='{range .items[*]}{.metadata.namespace}/{.status.installedCSV}{"\n"}{end}'); \
+	oc delete -f "$(AUTOMATION_DIR)/bootstrap.yaml" --ignore-not-found --wait=true; \
+	for c in $$csvs; do [[ $$c == */?* ]] && oc delete csv "$${c#*/}" -n "$${c%%/*}" --ignore-not-found; done; \
 	oc delete namespace -l app.kubernetes.io/part-of=$(LAB_APP) --ignore-not-found --wait=true
