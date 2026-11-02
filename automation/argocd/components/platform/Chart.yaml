@@ -1,0 +1,5 @@
+apiVersion: v2
+name: platform
+description: Operators the workshop assumes (installed, not configured). Participants configure them in the labs.
+type: application
+version: 0.1.0

@@ -1,0 +1,89 @@
+= Architecture and Control Boundaries
+:navtitle: Architecture and Control Boundaries
+
+== Control questions
+
+The labs answer the questions customers ask, with evidence from the cluster:
+
+. How does a workload get a GPU, and can workloads share one? (Module 2)
+. How do I onboard, record and serve a model my organisation trusts, and who can call it? (Module 3)
+. What does llm-d add over a single vLLM server, and how can I see it? (Module 4)
+. How do I offer models as a governed internal service? (Modules 5 and 6)
+. How do applications and agents consume it, and how do I see what an agent did? (Modules 6 and 7)
+. How do I know the model is good enough, and how do I keep it safe? (Modules 8 and 9)
+
+== The stack
+
+[cols="1,2,3",options="header"]
+|===
+| Layer | Component | Responsibility
+
+| Hardware discovery
+| Node Feature Discovery
+| labels nodes with the hardware found (`pci-10de.present` for NVIDIA)
+
+| GPU driver
+| NVIDIA GPU Operator, `NVIDIADriver` CR
+| loads the NVIDIA kernel driver on GPU nodes
+
+| GPU allocation
+| NVIDIA DRA driver (`GPUCluster` CR) + Kubernetes DRA
+| publishes GPUs as ResourceSlices; the scheduler allocates them to ResourceClaims
+
+| Model inventory
+| OpenShift AI model catalog and model registry
+| validated models (catalog); your models, versions and artifacts (registry)
+
+| Model serving
+| KServe + vLLM (Red Hat AI Inference Server build)
+| runs the model on the GPU; OpenAI-compatible API; authentication by kube-rbac-proxy
+
+| Inference routing
+| llm-d (`LLMInferenceService`, endpoint picker, InferencePool)
+| picks a replica per request from server state
+
+| Service governance
+| Models-as-a-Service + Red Hat Connectivity Link on a Gateway API gateway
+| API keys, subscriptions (tiers), token rate limits, usage telemetry
+
+| Application trust
+| MLflow, EvalHub (TrustyAI), NeMo Guardrails (TrustyAI)
+| traces, quality measurements, input and output policy
+|===
+
+== The one distinction to be able to explain
+
+*Making a GPU work is not the same as making it schedulable.* The driver makes the GPU usable by a
+process on the node. Only a scheduler-visible resource, a device plugin's counter or DRA's
+described device, lets Kubernetes decide which pod gets it. With DRA, the claim is where the
+decision is recorded, including whether the device is shared. Everything above the GPU layer, a
+model server, a replica, a MaaS tier, rests on that allocation.
+
+== Lab progression
+
+=== Day 1: from GPU to served model
+
+Module 1 takes an inventory: the GPU node exists, but nothing can use it. Module 2 loads the driver,
+turns on DRA, and claims the GPU three ways. Module 3 onboards a validated model through the
+catalog and your own registry and serves it with vLLM on a claimed GPU, behind authentication.
+
+=== Day 2: from model to service
+
+Module 4 replaces the single server with two llm-d replicas sharing the GPU and observes the
+scheduler's routing. Module 5 stands up Models-as-a-Service. Module 6 publishes the model with
+tiers, keys and limits, and consumes it from an application.
+
+=== Day 3: from service to trusted application
+
+Module 7 traces an agent with MLflow. Module 8 evaluates the model with EvalHub. Module 9 guards
+it with NeMo Guardrails and measures the guardrails.
+
+== Interpretation guardrails
+
+* One L4 GPU per participant cluster shows the mechanisms, not production capacity or performance.
+  Latency and throughput numbers you see are for this hardware only.
+* Sharing one GPU between two processes through a shared claim gives no memory or compute isolation
+  between them; it is shown to teach the API, not as a multi-tenant isolation method.
+* Some steps use APIs that are newer than the OpenShift AI {rhoai_version} documentation (marked on
+  each page and listed in the xref:91-reference.adoc[Technical Reference]). Passing them here does
+  not mean they are supported configurations.

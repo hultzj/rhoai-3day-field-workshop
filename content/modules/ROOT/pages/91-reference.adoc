@@ -1,0 +1,79 @@
+= Technical Reference
+:navtitle: Technical Reference
+
+== What each project contributes
+
+[cols="1,3",options="header"]
+|===
+| Project | Use it for
+
+| link:https://kubernetes.io/docs/concepts/scheduling-eviction/dynamic-resource-allocation/[Kubernetes Dynamic Resource Allocation^]
+| DeviceClass, ResourceSlice, ResourceClaim, ResourceClaimTemplate and CEL selectors (`resource.k8s.io/v1`)
+
+| link:https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/index.html[NVIDIA GPU Operator^]
+| the `NVIDIADriver` and `GPUCluster` (DRA) CRs, the NVIDIA DRA driver for GPUs, DCGM exporter
+
+| link:https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/[Red Hat OpenShift AI^]
+| model catalog, model registry, KServe and the vLLM serving runtimes
+
+| link:https://docs.vllm.ai/[vLLM^]
+| engine arguments (`--max-model-len`, tool calling, KV cache sizing) and startup memory report
+|===
+
+== Evidence interpretation
+
+[cols="1,2,2",options="header"]
+|===
+| Topic | Supported interpretation | Required evidence
+
+| GPU usable on the node
+| the kernel driver is loaded and sees the GPU
+| `NVIDIADriver` state `ready` and `nvidia-smi` naming the GPU
+
+| GPU schedulable
+| the scheduler can allocate the device to claims
+| a `ResourceSlice` listing the device, and a claim allocated to it
+
+| Exclusive allocation
+| a template gives each pod its own device
+| a second pod `Pending` with `cannot allocate all claims`
+
+| Shared allocation
+| pods referencing one claim use the same device
+| the same GPU UUID in both pods; `reservedFor` lists both
+
+| Model provenance
+| the deployed image is a recorded version
+| the registry's artifact URI equals the InferenceService `storageUri`
+
+| Endpoint protection
+| only callers with a token and RBAC are answered
+| 401 anonymous, 403 for an identity without `get` on the InferenceService, 200 for an authorised one
+|===
+
+== What this lab does not prove
+
+* *Support status of the DRA path.* OpenShift AI {rhoai_version} documents GPU access through the
+  device plugin and hardware profiles. The `GPUCluster` API is `v1alpha1` in GPU Operator
+  {gpu_operator_version}, and requesting the GPU with `resourceClaims` in an InferenceService is
+  accepted by the KServe API but is not a documented OpenShift AI procedure. The labs teach the
+  mechanism; they do not establish a supported configuration.
+* *Isolation of shared GPUs.* Pods that share a claim share GPU memory and compute without
+  isolation. Use MIG or a supported sharing mode where isolation matters.
+* *Performance.* One L4 per cluster demonstrates mechanisms; it does not predict latency or
+  throughput on production hardware.
+* *Registry-to-deployment linkage.* The InferenceService carries the registry labels the dashboard
+  uses; the lab does not claim the registry records the deployment itself.
+
+== Sources and further reading
+
+* Module 2: Kubernetes DRA concepts (link above); NVIDIA GPU Operator documentation for the DRA
+  driver and `NVIDIADriver` CR.
+* Module 3: OpenShift AI {rhoai_version} documentation, _Managing model registries_, _Working with
+  model registries_ and _Deploying models_ (single-model serving, vLLM runtime, authentication).
+* Workshop sources this guide builds on:
+  link:https://rhai-code.github.io/zt-rhoai-operations-showroom/modules/index.html[RHOAI Operations Workshop^],
+  link:https://rhpds.github.io/ph-deploy-configure-rhoai/modules/index.html[RHOAI Deploy & Configure^],
+  link:https://jingggg-wenn.github.io/rhoai-basic-inference-workshop/modules/main/index.html[Basic Inferencing on Red Hat AI^],
+  link:https://hyogrin.github.io/rhoai-basic-agentops-workshop/modules/main/index.html[Basic AgentOps on Red Hat AI^],
+  link:https://github.com/hultzj/nemo-guardrails-eval-lab[NeMo Guardrails Evaluation lab^].

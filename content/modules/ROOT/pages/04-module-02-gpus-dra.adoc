@@ -1,0 +1,560 @@
+= Module 2: GPUs the DRA way
+:navtitle: Module 2: GPUs the DRA way
+
+GPUs are the most expensive thing on an AI cluster, and customers ask two questions about them
+before anything else: _how does a workload get a GPU, and can more than one workload share it?_
+For years the answer was the device plugin: a node advertises `nvidia.com/gpu: 1`, a pod asks for
+one, and that is all the scheduler knows. Kubernetes Dynamic Resource Allocation (DRA) replaces
+that counter with a description of every device, its model, memory, architecture and driver,
+and lets a workload ask for a device by its properties and share it explicitly.
+
+In this module you let the cluster recognise the GPU, load the NVIDIA driver, turn on NVIDIA's DRA driver, read what it publishes
+about the L4 GPU, and claim that GPU three ways: exclusively, with a property selector that cannot
+match, and shared between two pods.
+
+.New to DRA?
+[%collapsible]
+====
+* *DeviceClass* — a cluster-wide category of devices (for example "NVIDIA GPUs") defined by a
+  selector; workloads ask for devices of a class.
+* *ResourceSlice* — published by a DRA driver for each node: the list of devices on that node and
+  each device's attributes and capacity.
+* *ResourceClaim* — a request for devices, which the scheduler allocates to concrete devices; pods
+  that reference the same claim share its devices.
+* *ResourceClaimTemplate* — a blueprint from which Kubernetes creates one new claim per pod, so
+  every pod gets its own device.
+* *CEL (Common Expression Language)* — the expression language a claim uses to select devices by
+  attribute, for example `device.attributes['gpu.nvidia.com'].productName == 'NVIDIA L4'`.
+====
+
+== Technical context
+
+The NVIDIA GPU Operator ({gpu_operator_version} here) can build two different stacks on a GPU
+node:
+
+[cols="1,2,2",options="header"]
+|===
+| | Device plugin stack (`ClusterPolicy`) | DRA stack (`GPUCluster`)
+
+| What the scheduler sees
+| an integer, `nvidia.com/gpu: 1`, on the node
+| a `ResourceSlice` listing each GPU with its attributes (product name, memory, architecture,
+  driver and CUDA versions, PCI address)
+
+| How a pod asks
+| `resources.limits: nvidia.com/gpu: 1`
+| `resourceClaims` pointing at a `ResourceClaim` or `ResourceClaimTemplate`, which can select by
+  attribute
+
+| Sharing
+| configured node-wide (time-slicing, MPS) outside the pod spec
+| explicit in the API: pods that reference one claim share its device
+
+| Who allocates
+| the kubelet's device manager picks a device
+| the scheduler allocates the claim before the pod is placed, and records which device it chose
+|===
+
+The driver is installed separately from either stack: an `NVIDIADriver` CR runs a driver
+container on every node it selects, which loads the NVIDIA kernel modules. The `GPUCluster` CR then
+runs the NVIDIA DRA driver (a kubelet plugin per GPU node), which discovers the GPUs through the
+loaded driver and publishes them as ResourceSlices, plus a DCGM exporter for GPU metrics. Kubernetes
+{ocp_version}'s scheduler does the rest: DRA (`resource.k8s.io/v1`) is a stable Kubernetes API.
+
+The rest of this workshop uses the DRA stack, so every GPU workload, including the model servers on
+Day 1 and Day 2, asks for its GPU through a claim.
+
+IMPORTANT: Do not create a `ClusterPolicy` on this cluster. The two stacks must not manage the same
+GPU node at the same time.
+
+// NOT-IN-DOCS: OpenShift AI 3.5 documents GPUs through the device plugin and hardware profiles; the
+// GPUCluster DRA stack is NVIDIA's (v1alpha1 API in GPU Operator 26.7). Listed in the reference page.
+NOTE: The `GPUCluster` API is `v1alpha1` in GPU Operator {gpu_operator_version}, and OpenShift AI
+{rhoai_version} documents GPU access through the device plugin and hardware profiles. This module
+teaches the DRA mechanism directly; see xref:91-reference.adoc[Technical Reference] for what that
+does and does not imply about support.
+
+== Learning objectives
+
+* Turn on hardware discovery and find the GPU node by its NFD label.
+* Load the NVIDIA driver with an `NVIDIADriver` CR and prove it with `nvidia-smi`.
+* Turn on the NVIDIA DRA driver with a `GPUCluster` CR.
+* Read the GPU's attributes from its `ResourceSlice` and explain what a `DeviceClass` selects.
+* Claim a GPU with a `ResourceClaimTemplate` and a CEL selector, and read the allocation.
+* Show that an exclusive claim blocks a second pod, that an unsatisfiable selector blocks a pod,
+  and that a shared `ResourceClaim` lets two pods use one GPU.
+
+== Exercise 1: Let the cluster recognise the GPU
+
+Node Feature Discovery is installed, but it only scans nodes once you create its instance. The
+`NodeFeatureDiscovery` CR starts a worker on every node that reads the PCI bus and labels the node
+with the device classes and vendors it finds. NVIDIA's PCI vendor ID is `10de`.
+
+[source,yaml]
+----
+kind: NodeFeatureDiscovery
+spec:
+  workerConfig:
+    configData: |
+      sources:
+        pci:
+          deviceClassWhitelist: ["0200", "03", "12"]   # <1>
+          deviceLabelFields: ["vendor"]                 # <2>
+----
+<1> *deviceClassWhitelist* — PCI classes to report: network controllers (`0200`), display controllers (`03`, which includes GPUs) and processing accelerators (`12`).
+<2> *deviceLabelFields* — label by vendor ID, which produces `feature.node.kubernetes.io/pci-<vendor>.present=true`.
+
+[source,bash,role="execute"]
+----
+oc apply -f - <<'EOF'
+apiVersion: nfd.openshift.io/v1
+kind: NodeFeatureDiscovery
+metadata:
+  name: nfd-instance
+  namespace: openshift-nfd
+spec:
+  operand:
+    imagePullPolicy: IfNotPresent
+    servicePort: 12000
+  workerConfig:
+    configData: |
+      core:
+        sleepInterval: 60s
+      sources:
+        pci:
+          deviceClassWhitelist: ["0200", "03", "12"]
+          deviceLabelFields: ["vendor"]
+EOF
+for i in $(seq 1 30); do
+  n=$(oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true -o name)
+  [ -n "$n" ] && break; echo "waiting for NFD labels..."; sleep 10
+done
+oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true \
+  -o custom-columns=NODE:.metadata.name,INSTANCE:.metadata.labels.node\\.kubernetes\\.io/instance-type
+----
+
+Expected result: exactly one node is listed, the `g6.2xlarge` GPU node you found in Module 1. The
+cluster now knows which node has an NVIDIA device; every later NVIDIA component selects its nodes
+by this label.
+// UNVERIFIED
+
+== Exercise 2: Load the NVIDIA driver
+
+The `NVIDIADriver` CR tells the GPU Operator which driver image to run and on which nodes. The
+operator ships a pinned driver image; the CR below uses its digest and selects nodes by the NFD
+label from Exercise 1.
+
+[source,yaml,subs="attributes+"]
+----
+apiVersion: nvidia.com/v1alpha1
+kind: NVIDIADriver
+spec:
+  driverType: gpu                                   # <1>
+  repository: nvcr.io/nvidia
+  image: driver
+  version: "{gpu_driver_digest}"                   # <2>
+  nodeSelector:
+    feature.node.kubernetes.io/pci-10de.present: "true"   # <3>
+  tolerations:
+  - {key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}   # <4>
+----
+<1> *driverType* — `gpu` for a bare-metal or passthrough GPU (the alternatives are vGPU modes).
+<2> *version* — the driver image digest the operator was released with (its `driver-image` related image).
+<3> *nodeSelector* — run the driver only where NFD found an NVIDIA PCI device.
+<4> *tolerations* — the GPU node is tainted, so the driver pod must tolerate the taint.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc apply -f - <<'EOF'
+apiVersion: nvidia.com/v1alpha1
+kind: NVIDIADriver
+metadata:
+  name: gpu-driver
+spec:
+  driverType: gpu
+  repository: nvcr.io/nvidia
+  image: driver
+  version: "{gpu_driver_digest}"
+  nodeSelector:
+    feature.node.kubernetes.io/pci-10de.present: "true"
+  tolerations:
+  - key: nvidia.com/gpu
+    operator: Exists
+    effect: NoSchedule
+EOF
+----
+
+Expected result: `nvidiadriver.nvidia.com/gpu-driver created`. Creation alone proves nothing; the
+next block waits for the driver to load.
+// UNVERIFIED
+
+The driver container needs a few minutes to start and load the kernel modules. Wait for the CR to
+report `ready`:
+
+[source,bash,role="execute"]
+----
+for i in $(seq 1 60); do
+  s=$(oc get nvidiadriver gpu-driver -o jsonpath='{.status.state}')
+  echo "driver state: ${s:-pending}"; [ "$s" = ready ] && break; sleep 10
+done
+DRIVER_POD=$(oc get pods -n nvidia-gpu-operator -o name | grep nvidia-gpu-driver | head -1)
+oc exec -n nvidia-gpu-operator "$DRIVER_POD" -c nvidia-driver-ctr -- \
+  nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
+----
+
+Expected result: the loop ends on `driver state: ready`, and `nvidia-smi` prints one row:
+`NVIDIA L4, 23034 MiB, 595.91.07` (or the driver version the operator shipped). The kernel
+driver is loaded and talks to the GPU, but the scheduler still cannot hand it out: that is the
+next exercise.
+// UNVERIFIED
+
+In short: the driver makes the GPU work on the node; it does not make it schedulable.
+
+== Exercise 3: Turn on the DRA driver
+
+[source,yaml]
+----
+apiVersion: nvidia.com/v1alpha1
+kind: GPUCluster
+spec:
+  draDriver:
+    computeDomains:
+      enabled: false        # <1>
+  daemonsets:
+    tolerations:            # <2>
+    - {key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}
+  dcgmExporter:
+    enabled: true           # <3>
+----
+<1> *computeDomains* — multi-node NVLink domains (GB200-class systems); a single L4 does not need them.
+<2> *daemonsets.tolerations* — every DaemonSet the stack runs (DRA kubelet plugin, validator, exporter) must tolerate the GPU taint.
+<3> *dcgmExporter* — publishes GPU utilisation and memory metrics to Prometheus.
+
+[source,bash,role="execute"]
+----
+oc apply -f - <<'EOF'
+apiVersion: nvidia.com/v1alpha1
+kind: GPUCluster
+metadata:
+  name: gpu-cluster
+spec:
+  draDriver:
+    computeDomains:
+      enabled: false
+  daemonsets:
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  dcgmExporter:
+    enabled: true
+EOF
+for i in $(seq 1 30); do
+  s=$(oc get gpucluster gpu-cluster -o jsonpath='{.status.state}')
+  echo "gpucluster state: ${s:-pending}"; [ "$s" = ready ] && break; sleep 10
+done
+oc get pods -n nvidia-gpu-operator
+----
+
+Expected result: the loop ends on `gpucluster state: ready`, and `nvidia-gpu-operator` runs
+`nvidia-dra-driver-kubelet-plugin-…`, `nvidia-dra-validator-…` and `nvidia-dcgm-exporter-dra-…`
+next to the driver pod, all `Running`. There is no device plugin pod: this stack never advertises
+`nvidia.com/gpu`.
+// UNVERIFIED
+
+== Exercise 4: Read what DRA publishes
+
+[source,bash,role="execute"]
+----
+oc get deviceclass
+oc get deviceclass gpu.nvidia.com -o jsonpath='{.spec.selectors[0].cel.expression}{"\n"}'
+oc get resourceslices -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{range .spec.devices[*]}  {.name}: {.attributes.productName.string}, {.attributes.architecture.string}, memory {.capacity.memory.value}, driver {.attributes.driverVersion.version}, CUDA {.attributes.cudaComputeCapability.version}{"\n"}{end}{end}'
+----
+
+Expected result: three device classes, `gpu.nvidia.com`, `mig.nvidia.com` and
+`vfio.gpu.nvidia.com`; the `gpu.nvidia.com` selector is
+`device.driver == 'gpu.nvidia.com' && device.attributes['gpu.nvidia.com'].type == 'gpu'`; and the
+GPU node's ResourceSlice lists one device, `gpu-0: NVIDIA L4, Ada Lovelace, memory 23034Mi,
+driver 595.91.7, CUDA 8.9.0`. The scheduler now knows what the device _is_, not just that one
+exists.
+// UNVERIFIED
+
+In short: a DeviceClass is a selector over the attributes a driver publishes in ResourceSlices.
+
+== Exercise 5: Claim the GPU by its properties
+
+Create a project for the GPU tests, a `ResourceClaimTemplate` that asks for one device of class
+`gpu.nvidia.com` whose product name is `NVIDIA L4`, and a pod that uses it.
+
+[source,yaml,subs="attributes+"]
+----
+kind: ResourceClaimTemplate
+spec:
+  spec:
+    devices:
+      requests:
+      - name: gpu
+        exactly:
+          deviceClassName: gpu.nvidia.com          # <1>
+          selectors:
+          - cel:
+              expression: device.attributes['gpu.nvidia.com'].productName == 'NVIDIA L4'   # <2>
+---
+kind: Pod
+spec:
+  resourceClaims:
+  - name: gpu
+    resourceClaimTemplateName: one-l4               # <3>
+  containers:
+  - resources:
+      claims: [{name: gpu}]                         # <4>
+----
+<1> *deviceClassName* — the category to choose from.
+<2> *selectors* — a CEL filter over the device's published attributes; only matching devices are candidates.
+<3> *resourceClaimTemplateName* — Kubernetes creates a fresh claim for this pod from the template.
+<4> *resources.claims* — which container gets the claimed device.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc new-project {gpu_namespace} >/dev/null 2>&1 || oc project {gpu_namespace}
+oc apply -n {gpu_namespace} -f - <<'EOF'
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: one-l4
+spec:
+  spec:
+    devices:
+      requests:
+      - name: gpu
+        exactly:
+          deviceClassName: gpu.nvidia.com
+          selectors:
+          - cel:
+              expression: device.attributes['gpu.nvidia.com'].productName == 'NVIDIA L4'
+EOF
+# smi-a first, and only once it holds the GPU, smi-b: the order decides which pod gets the device.
+for p in smi-a smi-b; do
+oc apply -n {gpu_namespace} -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $p
+spec:
+  restartPolicy: Never
+  tolerations: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
+  securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+  resourceClaims:
+  - name: gpu
+    resourceClaimTemplateName: one-l4
+  containers:
+  - name: smi
+    image: {cuda_image}
+    command: ["bash", "-c", "nvidia-smi -L; sleep 3600"]
+    securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+    resources:
+      claims: [{name: gpu}]
+EOF
+[ "$p" = smi-a ] && oc wait -n {gpu_namespace} --for=condition=Ready pod/smi-a --timeout=300s
+done
+oc logs -n {gpu_namespace} smi-a
+oc get resourceclaims -n {gpu_namespace} \
+  -o custom-columns=CLAIM:.metadata.name,STATE:.status.allocation.devices.results[0].device,RESERVED_FOR:.status.reservedFor[*].name
+----
+
+Expected result: `smi-a` becomes Ready and prints `GPU 0: NVIDIA L4 (UUID: GPU-…)`. Two claims
+exist, one per pod, created from the template: `smi-a-gpu-…` is allocated to device `gpu-0` and
+reserved for `smi-a`; `smi-b-gpu-…` has no device. The scheduler allocated the GPU to the first pod
+before placing it.
+// UNVERIFIED
+
+== Exercise 6: Two negative controls
+
+The second pod asked for its own GPU, but the cluster has only one, and the first pod holds it.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get pod smi-b -n {gpu_namespace} -o jsonpath='{.status.phase}{"\n"}'
+oc get events -n {gpu_namespace} --field-selector involvedObject.name=smi-b,reason=FailedScheduling \
+  -o jsonpath='{.items[-1:].message}{"\n"}'
+----
+
+Expected result: `smi-b` is `Pending`, and the last `FailedScheduling` event says `… cannot
+allocate all claims …`. An exclusive claim really is exclusive: the scheduler will not place a
+second pod on a GPU that is already allocated.
+// UNVERIFIED
+
+Now free the GPU and ask for a device that does not exist on this cluster, an H100:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc delete pod smi-a smi-b -n {gpu_namespace} --wait=true
+oc apply -n {gpu_namespace} -f - <<EOF
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: one-h100
+spec:
+  spec:
+    devices:
+      requests:
+      - name: gpu
+        exactly:
+          deviceClassName: gpu.nvidia.com
+          selectors:
+          - cel:
+              expression: device.attributes['gpu.nvidia.com'].productName.startsWith('NVIDIA H100')
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: smi-h100
+spec:
+  restartPolicy: Never
+  tolerations: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
+  securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+  resourceClaims:
+  - name: gpu
+    resourceClaimTemplateName: one-h100
+  containers:
+  - name: smi
+    image: {cuda_image}
+    command: ["bash", "-c", "nvidia-smi -L; sleep 3600"]
+    securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+    resources:
+      claims: [{name: gpu}]
+EOF
+sleep 20
+oc get pod smi-h100 -n {gpu_namespace} -o jsonpath='{.status.phase}{"\n"}'
+oc get events -n {gpu_namespace} --field-selector involvedObject.name=smi-h100,reason=FailedScheduling \
+  -o jsonpath='{.items[-1:].message}{"\n"}'
+----
+
+Expected result: `smi-h100` stays `Pending` even though the GPU is now free, with the same
+`cannot allocate all claims` reason: the only GPU's `productName` is `NVIDIA L4`, so the selector
+matches no device. Selectors are enforced by the scheduler, not by the workload.
+// UNVERIFIED
+
+.The scripted assertion for this exercise
+[%collapsible]
+====
+Run it while `smi-h100` still exists. It passes only if the pod is unscheduled because of its claim
+while the GPU is free.
+
+[source,bash,subs="attributes+"]
+----
+(
+[ "$(oc get pod smi-h100 -n {gpu_namespace} -o jsonpath='{.status.phase}')" = Pending ] ||
+  { echo "FAIL: smi-h100 is not Pending"; exit 1; }
+oc get events -n {gpu_namespace} --field-selector involvedObject.name=smi-h100,reason=FailedScheduling \
+  -o jsonpath='{.items[*].message}' | grep -q 'cannot allocate all claims' ||
+  { echo "FAIL: no 'cannot allocate all claims' scheduling event for smi-h100"; exit 1; }
+[ -z "$(oc get pods -n {gpu_namespace} --field-selector status.phase=Running -o name)" ] ||
+  { echo "FAIL: another pod is running in {gpu_namespace}, so the GPU may not be free"; exit 1; }
+echo PASS
+)
+----
+====
+
+Delete the pod that can never be scheduled:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc delete pod smi-h100 -n {gpu_namespace} --wait=true
+----
+
+Expected result: `pod "smi-h100" deleted`.
+// UNVERIFIED
+
+== Exercise 7: Share one GPU between two pods
+
+A `ResourceClaim` created on its own (not from a template) is a single allocation. Every pod that
+names it gets the _same_ device.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc apply -n {gpu_namespace} -f - <<'EOF'
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: shared-l4
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        deviceClassName: gpu.nvidia.com
+EOF
+for p in share-a share-b; do
+oc apply -n {gpu_namespace} -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $p
+spec:
+  restartPolicy: Never
+  tolerations: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
+  securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+  resourceClaims:
+  - name: gpu
+    resourceClaimName: shared-l4
+  containers:
+  - name: smi
+    image: {cuda_image}
+    command: ["bash", "-c", "nvidia-smi -L; sleep 3600"]
+    securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+    resources:
+      claims: [{name: gpu}]
+EOF
+done
+oc wait -n {gpu_namespace} --for=condition=Ready pod/share-a pod/share-b --timeout=300s
+oc logs -n {gpu_namespace} share-a; oc logs -n {gpu_namespace} share-b
+oc get resourceclaim shared-l4 -n {gpu_namespace} -o jsonpath='device: {.status.allocation.devices.results[0].device}{"\n"}reserved for: {.status.reservedFor[*].name}{"\n"}'
+----
+
+Expected result: both pods are Ready and print the same line, `GPU 0: NVIDIA L4 (UUID:
+GPU-…)`, with an identical UUID; the claim is allocated to `gpu-0` and reserved for `share-a
+share-b`. Sharing is a property of the claim, visible in the API, not a hidden node setting. Both
+processes share the GPU's memory and compute with no isolation between them, so each workload must
+be sized to leave room for the other (Day 2 does exactly this for two model replicas).
+// UNVERIFIED
+
+In short: template = one device per pod; standalone claim = one device for every pod that names it.
+
+Free the GPU for Module 3:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc delete pod share-a share-b -n {gpu_namespace} --wait=true
+oc get resourceclaim shared-l4 -n {gpu_namespace} -o jsonpath='reserved for: [{.status.reservedFor[*].name}] device: [{.status.allocation.devices.results[0].device}]{"\n"}'
+----
+
+Expected result: `reserved for: [] device: []`. The claim still exists, but once no pod reserves
+it, Kubernetes releases its allocation, so the GPU is free for the next claim.
+// UNVERIFIED
+
+== Evidence checkpoint
+
+Before continuing, verify that you can answer:
+
+* What does a `ResourceSlice` tell the scheduler that `nvidia.com/gpu: 1` cannot?
+* Which object decides whether two pods share a GPU, and how?
+* Why did `smi-h100` stay `Pending` while the GPU was free?
+* What does the `NVIDIADriver` CR do that the `GPUCluster` CR does not, and the other way round?
+
+.Answer key
+[%collapsible]
+====
+* Which device it is and what it offers: product name, architecture, memory, driver and CUDA
+  versions and PCI location, so a workload can select by property and the allocation records the
+  exact device.
+* The claim. Pods that reference one standalone `ResourceClaim` share its device; pods that
+  reference a `ResourceClaimTemplate` each get their own claim and their own device.
+* Its claim's CEL selector required an H100, and the only device's `productName` is `NVIDIA L4`, so
+  no device matched.
+* `NVIDIADriver` runs the driver container that loads the kernel modules on the GPU node.
+  `GPUCluster` runs the DRA kubelet plugin that discovers the GPUs through that driver and
+  publishes them as ResourceSlices (plus the DCGM exporter).
+====
+
+Proceed to xref:05-module-03-onboard-model.adoc[Module 3: Onboard a model].

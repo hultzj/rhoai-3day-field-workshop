@@ -1,0 +1,5 @@
+apiVersion: v2
+name: rhoai-3day-field-workshop
+description: RHDP field-content chart for the Red Hat AI 3-day field enablement workshop
+type: application
+version: 0.1.0

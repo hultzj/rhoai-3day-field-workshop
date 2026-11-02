@@ -1,0 +1,32 @@
+# Parent Application for clusters without an RHDP order; `make bootstrap` fills in the cluster's
+# ingress domain, the git revision (REVISION, default: gitops.revision in values.yaml) and the value
+# files (values.yaml, plus values-<PROFILE>.yaml when PROFILE is set). On RHDP the Field Content CI
+# creates the equivalent itself.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rhoai-3day-field-workshop
+  namespace: openshift-gitops
+  labels:
+    demo.redhat.com/application: field-content
+    app.kubernetes.io/part-of: rhoai-3day-field-workshop
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/hultzj/rhoai-3day-field-workshop.git
+    targetRevision: "GIT_REVISION"
+    path: automation/argocd
+    helm:
+      valueFiles: [VALUE_FILES]
+      valuesObject:
+        deployer:
+          domain: DEPLOYER_DOMAIN
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: openshift-gitops
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

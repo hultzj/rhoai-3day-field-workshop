@@ -1,0 +1,34 @@
+name: modules
+title: "Red Hat AI 3-Day Field Enablement Workshop"
+version: ~
+nav:
+  - modules/ROOT/nav.adoc
+
+asciidoc:
+  attributes:
+    experimental: true
+    page-pagination: true
+    # A missing {attribute} becomes a warning, and the build fails on warnings.
+    attribute-missing: warn
+    # GA, TP (Technology Preview) or DP (Developer Preview). Modules that use a TP feature say so
+    # on their own page.
+    feature_maturity: 'GA'
+    # Showroom overrides these from user_data at deploy time; defaults are for local preview.
+    guid: '%GUID%'
+    cluster_domain: 'apps.cluster.example.com'
+    # Lab attributes: every name or version used on more than one page.
+    gpu_namespace: 'ws-gpu-lab'
+    model_namespace: 'ws-models'
+    registry_name: 'field-registry'
+    registry_namespace: 'rhoai-model-registries'
+    model_name: 'granite4-tiny'
+    model_display: 'IBM Granite 4.0 H Tiny (FP8 dynamic)'
+    model_uri: 'oci://registry.redhat.io/rhai/modelcar-granite-4-0-h-tiny-fp8-dynamic:3.0'
+    vllm_image: 'registry.redhat.io/rhaii/vllm-cuda-rhel9@sha256:fd9540f3882b9aae5f862eba6c295d0e9c6b43f8c17b27b179481bfa330bfbc1'
+    cuda_image: 'nvcr.io/nvidia/cuda:12.9.1-base-ubi9@sha256:7fb9c7fbf0091231c63ba9f15c5e2176c36ee0904c5478c5a46426a591d7add1'
+    gpu_driver_digest: 'sha256:e243d778bd83de47668e7629d78f673317a130fedc99941be12aad7fc6bdfa85'
+    gpu_operator_version: '26.7.2'
+    rhoai_version: '3.5'
+    ocp_version: '5.0'
+    showroom_namespace: 'workshop-showroom'
+    lab_repo_url: 'https://github.com/hultzj/rhoai-3day-field-workshop'

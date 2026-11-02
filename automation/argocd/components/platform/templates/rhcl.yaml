@@ -1,0 +1,17 @@
+{{- if .Values.rhcl.enabled }}
+# Red Hat Connectivity Link (Kuadrant): AuthPolicy/RateLimitPolicy for llm-d routes and MaaS.
+# The operator only; participants create the Kuadrant instance in Module 5.
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhcl-operator
+  namespace: {{ .Values.rhcl.namespace }}
+  labels:
+    app.kubernetes.io/part-of: {{ .Values.partOf }}
+spec:
+  name: rhcl-operator
+  channel: {{ .Values.rhcl.channel }}
+  source: {{ .Values.rhcl.source }}
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+{{- end }}

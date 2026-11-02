@@ -1,0 +1,102 @@
+= Facilitator Guide
+:navtitle: Facilitator Guide
+
+For facilitators provisioning participant clusters ahead of class. Participants can skip this page.
+
+== What each participant cluster needs
+
+One dedicated cluster per participant (15-20 for a full class). Each needs:
+
+[cols="1,2,2",options="header"]
+|===
+| Prerequisite | Why | Check
+
+| OpenShift 4.21 or later (Kubernetes 1.34+, tested on {ocp_version}) with OpenShift GitOps
+| DRA's stable API, `resource.k8s.io/v1`, which every Module 2 manifest uses, is served from Kubernetes 1.34; Argo CD installs the workshop operators and the Showroom guide
+| `oc get --raw /apis/resource.k8s.io/v1 >/dev/null && echo ok`; `oc get csv -n openshift-gitops-operator`
+
+| OpenShift AI {rhoai_version}, DataScienceCluster with `kserve`, `modelregistry` and `dashboard` Managed
+| Modules 3 onwards
+| `oc get datasciencecluster -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}'` prints `True`
+
+| One GPU node: AWS `g6.2xlarge` (1x NVIDIA L4 24 GB), tainted `nvidia.com/gpu=True:NoSchedule`, 200 GB root disk
+| all GPU work; two model replicas share this one GPU on Day 2
+| `oc get nodes -o custom-columns=N:.metadata.name,T:.spec.taints[*].key \| grep nvidia.com/gpu`
+
+| CPU workers with room for the platform, a model registry, MaaS and (Day 3) a CPU safety model
+| Days 2-3
+| `oc adm top nodes`
+
+| A default StorageClass
+| model registry database, MaaS database, Showroom
+| `oc get sc` shows one `(default)`
+
+| One cluster-admin user per participant, with credentials handed out on the day
+| participants act as themselves and change cluster-scoped configuration
+| log in once as that user before class
+
+| *No* `ClusterPolicy` on the GPU node, and no NVIDIA driver or device plugin already running
+| Module 2 builds the DRA stack from scratch; the device-plugin stack must not manage the same node
+| `oc get clusterpolicy` prints nothing
+|===
+
+To add the GPU node to an AWS cluster, `automation/gpu-machineset.sh` copies an existing worker
+MachineSet, changes the instance type to `g6.2xlarge`, adds the taint and scales it to one. It
+prints the MachineSet and asks before creating it.
+
+== Provision
+
+*RHDP:* order the Field Content CI with this repository's URL and the path `automation/argocd`, on
+an OpenShift AI {rhoai_version} cluster with the GPU node above.
+
+*Any other OpenShift cluster*, from a cluster-admin shell in a checkout of this repository:
+
+[source,bash]
+----
+make -C automation bootstrap                      # or PROFILE=<name>, see below
+make -C automation status
+----
+
+Repeat `status` until every Application shows `Synced` and `Healthy`.
+
+*Cluster profiles.* Clusters differ in which catalogs carry the operators. A profile is a values
+file, `automation/argocd/values-<name>.yaml`, layered over `values.yaml`:
+
+* `values-sandbox-ocp5.yaml`: OpenShift 5.0 pre-release clusters whose v5.0 catalogs lack the GPU
+  Operator and NFD; it adds a v4.20 certified catalog and points each Subscription at a catalog that
+  carries it. It also installs RHCL into an existing standalone Authorino operator's namespace,
+  because a second Authorino in another AllNamespaces OperatorGroup conflicts with it.
+
+== Verify every cluster
+
+[source,bash]
+----
+make -C automation verify
+----
+
+Every line must print `PASS`. Fix any `FAIL` before participants arrive.
+
+== Day of class
+
+* Share the Showroom URL: `oc -n {showroom_namespace} get route showroom -o jsonpath='{.spec.host}'`.
+* Hand each participant their cluster's console URL and user credentials.
+* Day 1: Module 1 (15 min) runs in the 3:30-4:00 lab-instructions slot, Modules 2-3 (75 min) in the
+  4:00-5:15 lab slot. Module 2's
+  driver step takes about four minutes; Module 3's model start takes about five. Use the waits to
+  explain what is happening.
+
+== Known issues
+
+* *RHCL installed after OpenShift AI.* KServe's `llmisvc-controller-manager` checks for the
+  `AuthPolicy` CRD when it starts. If RHCL is installed later, `LLMInferenceService` resources stay
+  `GatewayPreconditionNotMet: AuthPolicy CRD is not available` until that controller restarts:
+  `oc rollout restart deployment/llmisvc-controller-manager -n redhat-ods-applications`.
+  Install the workshop operators before class so this happens once, by you.
+* *GPU Operator catalog on OpenShift 5.0 pre-release.* The v5.0 certified index does not carry
+  `gpu-operator-certified`; use the `sandbox-ocp5` profile.
+
+== Cost
+
+Each participant cluster runs one `g6.2xlarge` for the length of the event, in addition to its CPU
+nodes. Scale the GPU MachineSet to 0 between days if the event allows a daily rebuild of Module 2,
+and delete it after the event.

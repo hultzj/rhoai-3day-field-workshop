@@ -1,0 +1,64 @@
+= Prerequisites and Environment
+:navtitle: Prerequisites and Environment
+
+== What you need
+
+[cols="1,2",options="header"]
+|===
+| If you are… | You need
+
+| Every participant
+| A browser, the OpenShift console URL and the user name and password your facilitator gave you.
+All commands run in the console's Web Terminal, as you.
+
+| Using your own laptop shell instead (optional)
+| `oc` matching the cluster (download it from the console: *?* → *Command Line Tools*), `curl`
+and `jq`; log in with *Copy login command* from the user menu.
+|===
+
+Provided by the facilitator:
+
+* A dedicated OpenShift {ocp_version} cluster with OpenShift AI {rhoai_version}, one GPU node with
+  an NVIDIA L4, and the workshop operators installed by OpenShift GitOps.
+* Your user, a cluster administrator on this cluster.
+
+== Log in
+
+. Open the OpenShift console:
+  link:https://console-openshift-console.{cluster_domain}[console-openshift-console.{cluster_domain}^].
+. Choose the identity provider your facilitator named and log in with your user and password.
+. Check the user menu (top right): it shows your user name.
+
+Expected result: the console opens in the *Administrator* perspective and the user menu shows your
+user name.
+// UNVERIFIED
+
+The command-line pre-flight is the first exercise of
+xref:03-module-01-your-cluster.adoc[Module 1], run in the Web Terminal.
+
+== Why there is no terminal in this guide
+
+The Showroom page you are reading has no login. A terminal embedded here would run with the rights
+of whoever deployed it, available to anyone with the URL. Your user is a cluster administrator, so
+you work in the console's Web Terminal instead, which runs as you after you log in.
+
+== Access details
+
+[cols="1,2",options="header"]
+|===
+| Setting | Value
+
+| OpenShift console
+| link:https://console-openshift-console.{cluster_domain}[console-openshift-console.{cluster_domain}^]
+
+| OpenShift AI dashboard
+| link:https://rh-ai.{cluster_domain}[rh-ai.{cluster_domain}^]
+
+| GPU test project (Module 2)
+| `{gpu_namespace}`
+
+| Model project (Modules 3 onwards)
+| `{model_namespace}`
+|===
+
+Proceed to xref:03-module-01-your-cluster.adoc[Module 1: Your cluster].

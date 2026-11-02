@@ -1,0 +1,28 @@
+# Set by the parent chart.
+partOf: ""
+
+# Each operator: enabled (false when the cluster already has it: Argo CD must not adopt someone
+# else's Subscription, or teardown deletes it), plus the catalog that carries the pinned channel.
+nfd:
+  enabled: true
+  channel: stable
+  source: redhat-operators
+gpuOperator:
+  enabled: true
+  channel: v26.7
+  source: certified-operators
+  # OpenShift 5.0 pre-release: the v5.0 certified index has no gpu-operator-certified, so a v4.20
+  # index is added as an extra CatalogSource. Empty on clusters whose certified-operators carries it.
+  extraCatalogImage: ""
+rhcl:
+  enabled: true
+  channel: stable-1.4
+  source: redhat-operators
+  # openshift-operators by default. Where a standalone Authorino operator already runs in its own
+  # AllNamespaces OperatorGroup, install RHCL into that namespace so OLM reuses it instead of adding
+  # a second, conflicting Authorino.
+  namespace: openshift-operators
+webTerminal:
+  enabled: true
+  channel: fast
+  source: redhat-operators

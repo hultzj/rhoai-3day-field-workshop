@@ -1,0 +1,71 @@
+= Cleanup
+:navtitle: Cleanup
+
+Run only what matches how far you got. Each block is safe to re-run.
+
+== Participant cleanup
+
+Remove what you created in the labs, from the Web Terminal. First look at what will go:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get project {gpu_namespace} {model_namespace} --ignore-not-found
+oc get modelregistries.modelregistry.opendatahub.io -n {registry_namespace} --ignore-not-found
+oc get gpucluster,nvidiadriver --ignore-not-found
+oc get nodefeaturediscovery -n openshift-nfd --ignore-not-found
+----
+
+Expected result: the projects, the `{registry_name}` registry and the `gpu-cluster` and
+`gpu-driver` CRs and the `nfd-instance` you created are listed (whichever exist).
+// UNVERIFIED
+
+Then delete them, model server and registry first, the GPU stack last:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc delete project {model_namespace} {gpu_namespace} --ignore-not-found --wait=true
+oc delete modelregistries.modelregistry.opendatahub.io {registry_name} -n {registry_namespace} --ignore-not-found --wait=true
+oc delete gpucluster gpu-cluster --ignore-not-found --wait=true
+oc delete nvidiadriver gpu-driver --ignore-not-found --wait=true
+oc delete nodefeaturediscovery nfd-instance -n openshift-nfd --ignore-not-found --wait=true
+oc get deviceclass -o name | grep nvidia || echo "no NVIDIA device classes"
+----
+
+Expected result: the deletions complete, and the last line prints `no NVIDIA device classes`: the
+DRA stack and driver are gone. The labels NFD put on the nodes (`feature.node.kubernetes.io/…`)
+stay until someone removes them, so Module 1's "no NVIDIA PCI label" check would now print `true`.
+// UNVERIFIED
+
+WARNING: Deleting the project in which your Web Terminal runs closes the terminal. The Web Terminal
+runs in its own project (`openshift-terminal` by default), so the commands above do not touch it.
+
+== Facilitator teardown
+
+Only whoever deployed the environment removes it, from a cluster-admin shell in a checkout of this
+repository. First look at what the teardown will delete: every Application listed, along with the
+operators and namespaces it created.
+
+[source,bash,subs="attributes+"]
+----
+make -C automation status
+oc get namespace {showroom_namespace} nvidia-gpu-operator openshift-nfd --ignore-not-found
+----
+
+Then delete it and confirm the Showroom namespace is gone:
+
+[source,bash,subs="attributes+"]
+----
+make -C automation teardown
+oc get namespace {showroom_namespace} --ignore-not-found
+----
+
+The last command prints nothing once deletion completes. Argo CD deletes the operator
+Subscriptions it created, not the installed operators (CSVs) or their CRDs. List what remains:
+
+[source,bash]
+----
+oc get csv -A --no-headers | awk '{print $1, $2}' | sort -u -k2,2 | grep -E 'nfd|gpu-operator-certified|rhcl-operator|web-terminal|devworkspace'
+----
+
+Delete each listed CSV in its namespace (`oc delete csv <name> -n <namespace>`) only if no other
+workload on the cluster uses that operator; RHCL and the Web Terminal are often shared.

@@ -1,0 +1,56 @@
+# xreview configuration. Every key below is optional; the values shown are the
+# built-in defaults. See the README for what each one does.
+
+[gate]
+checks = [
+  { name = "build",     cmd = "npm run --silent build" },
+  { name = "check-lab", cmd = "bash scripts/check-lab.sh --draft" },
+  { name = "shell",     cmd = "for f in automation/*.sh automation/tests/*.sh scripts/*.sh; do bash -n $f || exit 1; done" },
+  { name = "selftest",  cmd = "bash automation/tests/selftest.sh" },
+]
+# Leave `checks` unset to auto-detect from package.json / pyproject.toml /
+# Makefile / Cargo.toml / go.mod. Set it to pin exact commands:
+# checks = [
+#   { name = "lint",      cmd = "ruff check ." },
+#   { name = "typecheck", cmd = "mypy ." },
+#   { name = "test",      cmd = "python3 -m pytest -q" },
+# ]
+timeout = 600
+output_lines = 60
+
+[review]
+timeout = 600          # per reviewer, seconds
+max_rounds = 3
+max_diff_bytes = 400000
+diff_context = 3
+
+[skip]
+# Changes under `max_changed_lines` that touch no sensitive path run the gate
+# only and skip model review.
+enabled = true
+max_changed_lines = 30
+# sensitive_paths = ["**/auth/**", "**/crypto/**", "**/migrations/**", "**/infra/**"]
+
+[reviewers]
+# Each reviewer is one `codex exec` run: a reader model takes in the diff and
+# delegates the hunting to subagents running a second model.
+# Drops your MCP servers and plugins. It does NOT drop ~/.codex/skills;
+# nothing currently does. See "Known limits" in the README.
+ignore_user_config = true
+subagent_depth = 2        # reader -> subagent. 1 disables delegation.
+subagent_concurrency = 4  # parallel subagents per reviewer
+# subagent_reasoning_effort = "high"
+
+# Any table under [reviewers] is a reviewer. The name selects the prompt in
+# xreview/prompts/<name>.md unless `prompt` overrides it, so adding a third
+# focus area needs no code change.
+[reviewers.correctness]
+enabled = true
+reader_model = "gpt-6-astra"
+subagent_model = "gpt-6.1-sol"
+# prompt = "custom/correctness.md"   # path, relative to the repo root
+
+[reviewers.design]
+enabled = true
+reader_model = "gpt-6-astra"
+subagent_model = "gpt-6.1-sol"

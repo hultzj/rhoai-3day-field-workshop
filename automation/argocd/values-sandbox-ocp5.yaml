@@ -1,0 +1,13 @@
+# Profile for OpenShift 5.0 pre-release clusters (the facilitator's AWS sandbox): the v5.0 catalogs
+# lack the GPU Operator and NFD, and a standalone Authorino operator already runs AllNamespaces in
+# openshift-auth-operator. Used with: make -C automation bootstrap PROFILE=sandbox-ocp5
+platform:
+  values:
+    nfd:
+      source: redhat-operators-rhoai
+    gpuOperator:
+      source: certified-operators-v420
+      extraCatalogImage: registry.redhat.io/redhat/certified-operator-index:v4.20
+    rhcl:
+      source: redhat-operators-rhoai
+      namespace: openshift-auth-operator

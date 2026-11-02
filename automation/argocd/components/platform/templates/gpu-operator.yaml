@@ -1,0 +1,51 @@
+{{- if .Values.gpuOperator.enabled }}
+{{- if .Values.gpuOperator.extraCatalogImage }}
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: {{ .Values.gpuOperator.source }}
+  namespace: openshift-marketplace
+  labels:
+    app.kubernetes.io/part-of: {{ .Values.partOf }}
+spec:
+  displayName: Certified Operators (GPU operator)
+  image: {{ .Values.gpuOperator.extraCatalogImage }}
+  sourceType: grpc
+  publisher: Red Hat
+  updateStrategy:
+    registryPoll:
+      interval: 60m
+---
+{{- end }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nvidia-gpu-operator
+  labels:
+    app.kubernetes.io/part-of: {{ .Values.partOf }}
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: nvidia-gpu-operator
+  namespace: nvidia-gpu-operator
+  labels:
+    app.kubernetes.io/part-of: {{ .Values.partOf }}
+spec:
+  targetNamespaces: [nvidia-gpu-operator]
+---
+# The operator only. Participants write the NVIDIADriver and GPUCluster (DRA) resources in Module 2.
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: gpu-operator-certified
+  namespace: nvidia-gpu-operator
+  labels:
+    app.kubernetes.io/part-of: {{ .Values.partOf }}
+spec:
+  name: gpu-operator-certified
+  channel: {{ .Values.gpuOperator.channel }}
+  source: {{ .Values.gpuOperator.source }}
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
+{{- end }}

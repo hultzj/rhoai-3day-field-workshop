@@ -1,0 +1,154 @@
+= Module 1: Your cluster
+:navtitle: Module 1: Your cluster
+
+Every exercise in this workshop changes a real OpenShift cluster, and every claim is checked
+against what the cluster reports. Before changing anything, you establish who you are, what the
+cluster already has, and what it does not have yet. The customer question behind this module is
+the first one a platform team asks: _what is on this cluster today, and what will we have to add
+to run AI workloads on it?_
+
+In this module you open the Web Terminal, confirm your identity and rights, and take an inventory
+of the GPU node, the installed operators, and OpenShift AI.
+
+.New to this environment?
+[%collapsible]
+====
+* *Web Terminal* — a terminal that runs in a pod on the cluster and opens inside the OpenShift
+  console; it is logged in as you, with your permissions.
+* *Operator* — a controller that installs and manages a product on the cluster through custom
+  resources (CRs).
+* *OLM (Operator Lifecycle Manager)* — installs operators from catalogs; a `Subscription` asks for
+  an operator, a `ClusterServiceVersion` (CSV) is the installed version.
+* *DataScienceCluster (DSC)* — the OpenShift AI resource that turns its components (dashboard,
+  KServe, model registry, and so on) on or off.
+* *NFD (Node Feature Discovery)* — labels each node with the hardware it finds, for example the
+  PCI vendor ID of a GPU.
+====
+
+== Technical context
+
+Your cluster was prepared by OpenShift GitOps with operators only: Node Feature Discovery, the
+NVIDIA GPU Operator, Red Hat Connectivity Link and the Web Terminal, next to an existing OpenShift
+AI {rhoai_version} installation. None of them is configured for this workshop. There is a GPU node,
+but nothing on the cluster can use its GPU yet: no hardware discovery has run, no driver is loaded,
+and no scheduler-visible GPU resource exists. You will add each missing layer yourself, as YAML you write and apply, so that at
+the end of Day 1 you can explain what every layer contributes.
+
+You act as yourself throughout. Your user is a cluster administrator on this dedicated cluster,
+because several labs change cluster-scoped configuration (drivers, device classes, gateways). The
+Showroom terminal is turned off on purpose: the Showroom page has no login, so a terminal there
+would hand your cluster-admin rights to anyone with the URL.
+
+== Learning objectives
+
+* Open the Web Terminal and confirm the identity it acts as.
+* Confirm cluster-admin rights with `oc auth can-i`.
+* Find the GPU node by its taint, and show that the cluster can neither identify nor schedule its GPU yet.
+* Read which operators and OpenShift AI components are installed.
+
+== Exercise 1: Open the Web Terminal and check who you are
+
+. In the OpenShift console, click the *>_* (Web Terminal) icon in the top bar.
+. If asked for a project, keep the default and click *Start*.
+. Wait until a shell prompt appears in the panel at the bottom of the console.
+
+Then run:
+
+[source,bash,role="execute"]
+----
+oc whoami
+oc auth can-i '*' '*' --all-namespaces
+----
+
+Expected result: `oc whoami` prints your user name (the facilitator gave it to you), and
+`oc auth can-i` prints `yes`, which means your user may perform any action on any resource:
+cluster-admin. Every later command runs with these rights.
+// UNVERIFIED
+
+In short: you are a cluster administrator, acting as yourself, from a terminal that lives on the
+cluster.
+
+== Exercise 2: Find the GPU node
+
+The GPU node was added with a taint, `nvidia.com/gpu`, which keeps ordinary pods off the expensive
+node: only pods that tolerate the taint are scheduled there. Find it by that taint:
+
+[source,bash,role="execute"]
+----
+oc get nodes -o custom-columns=NODE:.metadata.name,INSTANCE:.metadata.labels.node\\.kubernetes\\.io/instance-type,TAINTS:.spec.taints[*].key \
+  | grep -E 'NODE|nvidia.com/gpu'
+----
+
+Expected result: one node, instance type `g6.2xlarge` (8 vCPUs and one NVIDIA L4 GPU), tainted with
+`nvidia.com/gpu`.
+// UNVERIFIED
+
+== Exercise 3: Show that the GPU is not usable yet (negative control)
+
+A GPU becomes usable when three things exist: something that recognises the hardware on the node,
+a kernel driver, and a way for the scheduler to see and hand out the device. Check all three:
+
+[source,bash,role="execute"]
+----
+GPU_NODE=$(oc get nodes -o custom-columns=NODE:.metadata.name,TAINTS:.spec.taints[*].key --no-headers | awk '/nvidia.com\/gpu/ {print $1; exit}')
+echo "NVIDIA PCI label on $GPU_NODE: $(oc get node "$GPU_NODE" -o jsonpath='{.metadata.labels.feature\.node\.kubernetes\.io/pci-10de\.present}')"
+echo "allocatable on $GPU_NODE:"; oc get node "$GPU_NODE" -o jsonpath='{.status.allocatable}{"\n"}'
+echo "GPU device classes:"; oc get deviceclass -o name | grep nvidia || echo "none"
+echo "driver pods:"; oc get pods -n nvidia-gpu-operator -o name | grep -E 'driver|dra' || echo "none"
+----
+
+Expected result: the NVIDIA PCI label is empty (no hardware discovery has run); the node's
+allocatable resources list `cpu`, `memory`, `pods` and storage, but no `nvidia.com/gpu`; there are
+no NVIDIA device classes; and no driver or DRA pods run. The hardware is present, but the cluster
+neither knows it is a GPU nor can schedule anything onto it. Module 2 adds the missing layers.
+// UNVERIFIED
+
+== Exercise 4: Take an inventory of operators and OpenShift AI
+
+[source,bash,role="execute"]
+----
+oc get csv -A --no-headers 2>/dev/null | awk '{print $2, $NF}' | sort -u | grep -E 'nfd|gpu-operator|rhcl|authorino|limitador|web-terminal|rhods'
+oc get datasciencecluster -o jsonpath='{range .items[*].status.conditions[?(@.status=="True")]}{.type}{"\n"}{end}' | grep -E 'Ready|KserveReady|ModelRegistryReady|DashboardReady'
+----
+
+Expected result: each listed operator CSV shows `Succeeded`, among them `nfd`,
+`gpu-operator-certified.v{gpu_operator_version}`, `rhcl-operator`, `web-terminal` and
+`rhods-operator` (OpenShift AI {rhoai_version}); the DataScienceCluster reports `Ready`,
+`KserveReady` and `ModelRegistryReady`. Operators are installed, but nothing is configured yet.
+// UNVERIFIED
+
+.The scripted assertion for this module
+[%collapsible]
+====
+[source,bash]
+----
+(
+[ "$(oc auth can-i '*' '*' --all-namespaces)" = yes ] || { echo "FAIL: not cluster-admin"; exit 1; }
+oc get nodes -o custom-columns=T:.spec.taints[*].key --no-headers | grep -q nvidia.com/gpu || { echo "FAIL: no GPU node"; exit 1; }
+for p in nfd gpu-operator-certified rhcl-operator web-terminal rhods-operator; do
+  oc get csv -A --no-headers 2>/dev/null | awk '{print $2, $NF}' | grep -q "^$p.* Succeeded$" || { echo "FAIL: operator $p not Succeeded"; exit 1; }
+done
+echo PASS
+)
+----
+====
+
+== Evidence checkpoint
+
+Before continuing, verify that you can answer:
+
+* How did you find the GPU node, and what keeps ordinary pods off it?
+* Which three layers are missing before a pod can use the GPU?
+* Why is the Showroom terminal turned off in this workshop?
+
+.Answer key
+[%collapsible]
+====
+* By its `nvidia.com/gpu` taint; the taint keeps every pod that does not tolerate it off the node.
+* Hardware discovery (no NFD label yet), the kernel driver (no driver pod), and a scheduler-visible
+  device (neither a device plugin resource nor a DRA device class).
+* The Showroom page has no login; a terminal there would give your cluster-admin rights to anyone
+  who has the URL.
+====
+
+Proceed to xref:04-module-02-gpus-dra.adoc[Module 2: GPUs the DRA way].

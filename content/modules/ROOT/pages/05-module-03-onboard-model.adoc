@@ -1,0 +1,433 @@
+= Module 3: Onboard a model
+:navtitle: Module 3: Onboard a model
+
+A GPU is only useful once a model runs on it, and enterprises do not let just any model run. They
+want to know where it came from, which version is in production, and who can call it. The
+customer question: _how do I take a model my organisation trusts, record it, and serve it on our
+own GPUs behind authentication?_
+
+In this module you find a Red Hat validated model in the OpenShift AI catalog, create a model
+registry and record the model and its version in it, then serve it with vLLM on the GPU you claimed
+in Module 2, and prove who can and cannot call it.
+
+.New to model serving on OpenShift AI?
+[%collapsible]
+====
+* *Modelcar* — a model packaged as an OCI container image (`oci://…`), pulled and cached like any
+  image; no S3 bucket or credentials needed.
+* *Model registry* — a service that records registered models, their versions and the artifacts
+  (where the files live) and metadata of each version.
+* *KServe* — the serving layer of OpenShift AI; an `InferenceService` declares a model server.
+* *ServingRuntime* — the template of the server container KServe runs, here vLLM for NVIDIA GPUs.
+* *vLLM* — the inference engine; it loads the model onto the GPU and manages the KV cache (the
+  per-token memory that lets it serve many requests at once).
+====
+
+== Technical context
+
+Onboarding has three steps, each owned by a different component:
+
+[cols="1,2,2",options="header"]
+|===
+| Step | Component | What it records or does
+
+| Choose
+| Model catalog (`model-catalog` service in `{registry_namespace}`)
+| lists Red Hat validated models with their size, licence, tasks and the modelcar image of each
+
+| Record
+| Model registry (a `ModelRegistry` you create; REST API behind kube-rbac-proxy)
+| registered model → version → artifact (the `oci://` URI and model format)
+
+| Serve
+| KServe `InferenceService` + vLLM `ServingRuntime`
+| a Deployment whose pod pulls the modelcar, claims the GPU through DRA, and exposes an
+  OpenAI-compatible API behind authentication
+|===
+
+The model is *{model_display}*: a 7B-parameter hybrid model (transformer layers mixed with Mamba
+state-space layers) in which only about 1B parameters are active per token (mixture of experts),
+quantised to FP8. On the L4 it needs about 6.6 GiB for weights, which leaves room for a large KV
+cache now and for two replicas on Day 2.
+
+Authentication is switched on with one annotation, `security.opendatahub.io/enable-auth: "true"`.
+KServe then puts a kube-rbac-proxy in front of vLLM: every request must carry an OpenShift bearer
+token, and the token's identity must be allowed to `get` the InferenceService.
+
+// NOT-IN-DOCS: OpenShift AI 3.5 documents GPU serving through hardware profiles (device plugin).
+// Requesting the GPU with resourceClaims in the InferenceService predictor is DRA-native and is
+// accepted by the KServe CRD, but is not a documented OpenShift AI procedure.
+NOTE: OpenShift AI {rhoai_version} documents GPU serving through hardware profiles, which request
+`nvidia.com/gpu`. On a DRA-only GPU node there is no such resource, so this module requests the GPU
+with `resourceClaims` in the InferenceService, a field the KServe API accepts. The
+xref:91-reference.adoc[Technical Reference] lists what that implies.
+
+== Learning objectives
+
+* Find a validated model and its modelcar image in the model catalog.
+* Create a model registry and record a model, a version and its artifact through the REST API.
+* Serve the model with vLLM on a DRA-claimed GPU, with authentication on.
+* Prove that anonymous and unauthorised callers are rejected and an authorised caller is answered.
+* Read vLLM's startup report: weight memory, KV cache size and maximum concurrency.
+
+== Exercise 1: Find the model in the catalog
+
+. Open the OpenShift AI dashboard: in the OpenShift console, click the application launcher (the
+  grid icon in the top bar) and choose *Red Hat OpenShift AI*.
+. In the left menu, open *AI hub* → *Catalog*.
+. Search for `granite-4.0-h-tiny` and open the card *granite-4.0-h-tiny-FP8-dynamic*.
+. Read the model card: provider, licence, size and the *Red Hat validated* label.
+
+Expected result: the card shows `RedHatAI/granite-4.0-h-tiny-FP8-dynamic`, Apache-2.0 licence and
+about 6.9B parameters.
+// UNVERIFIED
+
+The catalog is a service with an API, so the same facts, and the image to deploy, can be read from
+the terminal:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+CAT="oc exec -n {registry_namespace} deploy/model-catalog -c catalog -- curl -s"
+$CAT "http://localhost:8080/api/model_catalog/v1alpha1/models?q=granite-4.0-h-tiny-FP8&pageSize=5" \
+  | jq -r '.items[] | [.source_id, .name, (.customProperties.size.string_value // "")] | @tsv'
+$CAT "http://localhost:8080/api/model_catalog/v1alpha1/sources/redhat_ai_validated_models/models/RedHatAI%2Fgranite-4.0-h-tiny-FP8-dynamic/artifacts" \
+  | jq -r '.items[] | .uri // empty | select(startswith("oci://"))'
+----
+
+Expected result: one model, `redhat_ai_validated_models  RedHatAI/granite-4.0-h-tiny-FP8-dynamic
+6.9B params`, and one artifact, `{model_uri}`. That URI is what KServe will pull.
+// UNVERIFIED
+
+== Exercise 2: Create a model registry
+
+The catalog is Red Hat's list. The registry is _yours_: it records what your organisation decided
+to use. OpenShift AI's model registry operator deploys a registry from one CR.
+
+[source,yaml,subs="attributes+"]
+----
+kind: ModelRegistry
+metadata:
+  name: {registry_name}
+  namespace: {registry_namespace}   # <1>
+spec:
+  postgres:
+    generateDeployment: true        # <2>
+  rest: {}                          # <3>
+  kubeRBACProxy: {}                 # <4>
+----
+<1> *namespace* — the namespace the DataScienceCluster names for registries (`registriesNamespace`).
+<2> *generateDeployment* — the operator deploys a PostgreSQL database for the registry's metadata.
+<3> *rest* — expose the REST API.
+<4> *kubeRBACProxy* — put the REST API behind OpenShift authentication and RBAC, and create a Route.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc apply -f - <<'EOF'
+apiVersion: modelregistry.opendatahub.io/v1beta1
+kind: ModelRegistry
+metadata:
+  name: {registry_name}
+  namespace: {registry_namespace}
+spec:
+  postgres:
+    generateDeployment: true
+  rest: {}
+  kubeRBACProxy: {}
+EOF
+oc wait modelregistries.modelregistry.opendatahub.io/{registry_name} -n {registry_namespace} --for=condition=Available --timeout=300s
+REGISTRY=https://$(oc get route {registry_name}-https -n {registry_namespace} -o jsonpath='{.spec.host}')/api/model_registry/v1alpha3
+echo "$REGISTRY"
+----
+
+Expected result: `modelregistry.modelregistry.opendatahub.io/{registry_name} condition met`, and
+the registry URL `https://{registry_name}-rest.{cluster_domain}/api/model_registry/v1alpha3`.
+// UNVERIFIED
+
+== Exercise 3: Record the model, its version and its artifact
+
+First the negative control: the registry must refuse an anonymous caller.
+
+[source,bash,role="execute"]
+----
+curl -sk -o /dev/null -w 'anonymous: %{http_code}\n' "$REGISTRY/registered_models"
+----
+
+Expected result: `anonymous: 401`. The kube-rbac-proxy rejects requests without a token.
+// UNVERIFIED
+
+Now record the model, version `3.0`, and the artifact that points at the modelcar:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+AUTH="Authorization: Bearer $(oc whoami -t)"
+RM_ID=$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST "$REGISTRY/registered_models" \
+  -d "{\"name\":\"granite-4.0-h-tiny-fp8\",\"description\":\"{model_display}, Red Hat validated\",\"owner\":\"$(oc whoami)\"}" | jq -r .id)
+MV_ID=$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST "$REGISTRY/model_versions" \
+  -d "{\"name\":\"3.0\",\"registeredModelId\":\"$RM_ID\",\"author\":\"$(oc whoami)\"}" | jq -r .id)
+curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST "$REGISTRY/model_versions/$MV_ID/artifacts" \
+  -d '{"artifactType":"model-artifact","name":"granite-4.0-h-tiny-fp8-modelcar","uri":"{model_uri}","modelFormatName":"vLLM","modelFormatVersion":"1"}' | jq '{id, uri, modelFormatName}'
+echo "registered model id: $RM_ID, version id: $MV_ID"
+curl -sk -H "$AUTH" "$REGISTRY/registered_models/$RM_ID/versions" | jq -r '.items[] | "\(.name) \(.state)"'
+----
+
+Expected result: the artifact prints with `"uri": "{model_uri}"` and `"modelFormatName": "vLLM"`;
+the IDs print (`1` and `2` on a fresh registry); and the version list shows `3.0 LIVE`. The
+registry now answers "which image is version 3.0 of this model" for anyone allowed to ask.
+// UNVERIFIED
+
+GUI view: in the OpenShift AI dashboard, *AI hub* → *Registry*, select `{registry_name}`: the model
+`granite-4.0-h-tiny-fp8` with version `3.0`.
+
+== Exercise 4: Prepare the serving project
+
+Create a data science project for models and a GPU claim template in it, then write the
+`ServingRuntime`: the container KServe will run for every InferenceService that names it. The
+OpenShift AI dashboard creates the same object from a template it ships
+(`vllm-cuda-runtime-template`); here you write it, so you can see that a runtime is nothing more
+than a container spec plus the model formats it serves.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc new-project {model_namespace} >/dev/null 2>&1 || oc project {model_namespace}
+oc label namespace {model_namespace} opendatahub.io/dashboard=true --overwrite
+oc apply -n {model_namespace} -f - <<'EOF'
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: one-l4
+spec:
+  spec:
+    devices:
+      requests:
+      - name: gpu
+        exactly:
+          deviceClassName: gpu.nvidia.com
+          selectors:
+          - cel:
+              expression: device.attributes['gpu.nvidia.com'].productName == 'NVIDIA L4'
+EOF
+----
+
+Expected result: the project `{model_namespace}` exists with the label
+`opendatahub.io/dashboard=true` (so the dashboard lists it), and
+`resourceclaimtemplate.resource.k8s.io/one-l4 created`.
+// UNVERIFIED
+
+The runtime's key fields:
+
+[source,yaml,subs="attributes+"]
+----
+kind: ServingRuntime
+spec:
+  supportedModelFormats:
+  - {name: vLLM, autoSelect: true}                       # <1>
+  containers:
+  - name: kserve-container                               # <2>
+    image: {vllm_image}   # <3>
+    command: [python, -m, vllm.entrypoints.openai.api_server]
+    args: [--port=8080, --model=/mnt/models, "--served-model-name={{.Name}}"]   # <4>
+    ports: [{containerPort: 8080, protocol: TCP}]
+----
+<1> *supportedModelFormats* — an InferenceService whose `modelFormat` is `vLLM` can use this runtime.
+<2> *kserve-container* — the name KServe expects; the InferenceService's `args`, `resources` and storage are merged into it.
+<3> *image* — Red Hat's build of vLLM (Red Hat AI Inference Server) shipped with OpenShift AI {rhoai_version}, pinned by digest.
+<4> *args* — `/mnt/models` is where KServe mounts the modelcar's files; `{{.Name}}` becomes the InferenceService name, which clients send as `model`.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc apply -n {model_namespace} -f - <<'EOF'
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: vllm-cuda-runtime
+  labels:
+    opendatahub.io/dashboard: "true"
+  annotations:
+    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+    opendatahub.io/runtime-version: v0.24.0
+spec:
+  annotations:
+    opendatahub.io/kserve-runtime: vllm
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8080"
+  multiModel: false
+  supportedModelFormats:
+  - name: vLLM
+    autoSelect: true
+  containers:
+  - name: kserve-container
+    image: {vllm_image}
+    command: ["python", "-m", "vllm.entrypoints.openai.api_server"]
+    args: ["--port=8080", "--model=/mnt/models", "--served-model-name={{.Name}}"]
+    env:
+    - name: HF_HOME
+      value: /tmp/hf_home
+    ports:
+    - containerPort: 8080
+      protocol: TCP
+EOF
+echo "yours:    $(oc get servingruntime vllm-cuda-runtime -n {model_namespace} -o jsonpath='{.spec.containers[0].image}')"
+echo "template: $(oc process -n redhat-ods-applications vllm-cuda-runtime-template -o jsonpath='{.items[0].spec.containers[0].image}')"
+----
+
+Expected result: `servingruntime.serving.kserve.io/vllm-cuda-runtime created`, and the two image
+lines are identical: the runtime you wrote runs exactly the vLLM build the dashboard would have used.
+// UNVERIFIED
+
+== Exercise 5: Serve the model on the claimed GPU
+
+[source,yaml,subs="attributes+"]
+----
+kind: InferenceService
+metadata:
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment          # <1>
+    security.opendatahub.io/enable-auth: "true"              # <2>
+  labels:
+    modelregistry.opendatahub.io/registered-model-id: "<RM_ID>"   # <3>
+spec:
+  predictor:
+    resourceClaims:
+    - {name: gpu, resourceClaimTemplateName: one-l4}         # <4>
+    model:
+      storageUri: {model_uri}
+      args: ["--max-model-len=16384", "--enable-auto-tool-choice", "--tool-call-parser=granite4"]   # <5>
+----
+<1> *deploymentMode* — a plain Deployment and Service (no Knative); the standard mode for LLMs.
+<2> *enable-auth* — put kube-rbac-proxy in front of vLLM; callers need a token and RBAC.
+<3> *registry labels* — link the deployment to the registered model and version you recorded.
+<4> *resourceClaims* — the GPU, claimed exactly as the test pods did in Module 2.
+<5> *vLLM args* — context length, and tool calling with Granite 4's parser (used on Day 3).
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc apply -n {model_namespace} -f - <<EOF
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: {model_name}
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment
+    security.opendatahub.io/enable-auth: "true"
+  labels:
+    networking.kserve.io/visibility: exposed
+    modelregistry.opendatahub.io/name: {registry_name}
+    modelregistry.opendatahub.io/registered-model-id: "$RM_ID"
+    modelregistry.opendatahub.io/model-version-id: "$MV_ID"
+spec:
+  predictor:
+    tolerations: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
+    resourceClaims:
+    - name: gpu
+      resourceClaimTemplateName: one-l4
+    model:
+      modelFormat: {name: vLLM}
+      runtime: vllm-cuda-runtime
+      storageUri: {model_uri}
+      args: ["--max-model-len=16384", "--enable-auto-tool-choice", "--tool-call-parser=granite4"]
+      resources:
+        requests: {cpu: "2", memory: 12Gi}
+        limits: {cpu: "6", memory: 20Gi}
+        claims: [{name: gpu}]
+EOF
+----
+
+Expected result: `inferenceservice.serving.kserve.io/{model_name} created`.
+// UNVERIFIED
+
+Pulling the modelcar and starting vLLM takes several minutes. Wait for `Ready`:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc wait isvc/{model_name} -n {model_namespace} --for=condition=Ready --timeout=900s
+oc get isvc {model_name} -n {model_namespace} -o jsonpath='{.status.url}{"\n"}'
+oc get resourceclaims -n {model_namespace} \
+  -o custom-columns=CLAIM:.metadata.name,DEVICE:.status.allocation.devices.results[0].device,RESERVED_FOR:.status.reservedFor[*].name
+----
+
+Expected result: `inferenceservice.serving.kserve.io/{model_name} condition met`; the URL is
+`https://{model_name}-{model_namespace}.{cluster_domain}`; and one claim, `{model_name}-predictor-…-gpu-…`,
+is allocated to `gpu-0` and reserved for the predictor pod. The model server holds the GPU through
+the same DRA mechanism as the test pods.
+// UNVERIFIED
+
+== Exercise 6: Prove who can call the model
+
+Three callers: nobody, a ServiceAccount with no rights, and you.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+URL=$(oc get isvc {model_name} -n {model_namespace} -o jsonpath='{.status.url}')
+oc create sa no-rights -n {model_namespace} --dry-run=client -o yaml | oc apply -f - >/dev/null
+curl -sk -o /dev/null -w 'anonymous:          %\{http_code}\n' "$URL/v1/models"
+curl -sk -o /dev/null -w 'SA without RBAC:    %\{http_code}\n' -H "Authorization: Bearer $(oc create token no-rights -n {model_namespace})" "$URL/v1/models"
+curl -sk -o /dev/null -w 'you (cluster-admin): %\{http_code}\n' -H "Authorization: Bearer $(oc whoami -t)" "$URL/v1/models"
+----
+
+Expected result: `anonymous: 401`, `SA without RBAC: 403`, `you (cluster-admin): 200`. 401 means
+"who are you?" (no token); 403 means "I know who you are, and you may not" (the ServiceAccount
+cannot `get` the InferenceService).
+// UNVERIFIED
+
+Now ask the model something, with a tool it may decide to call:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+curl -sk "$URL/v1/chat/completions" -H "Authorization: Bearer $(oc whoami -t)" -H 'Content-Type: application/json' -d '{
+  "model": "{model_name}",
+  "messages": [{"role": "user", "content": "What is the weather in Seoul right now?"}],
+  "tools": [{"type": "function", "function": {"name": "get_weather", "description": "Current weather for a city",
+             "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}],
+  "max_tokens": 200}' | jq '{finish: .choices[0].finish_reason, tool_calls: .choices[0].message.tool_calls, usage}'
+----
+
+Expected result: `"finish": "tool_calls"` and one tool call to `get_weather` with arguments
+`{"city": "Seoul"}`, plus a `usage` block counting prompt and completion tokens. The model did not
+answer; it asked the caller to run a tool. That is the building block of the Day 3 agent.
+// UNVERIFIED
+
+== Exercise 7: Read what vLLM did with the GPU
+
+vLLM reports how it split the GPU's memory at startup.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc logs -n {model_namespace} deploy/{model_name}-predictor -c kserve-container \
+  | grep -o -E 'Model loading took [0-9.]+ GiB|Available KV cache memory: [0-9.]+ GiB|GPU KV cache size: [0-9,]+ tokens|Maximum concurrency for [0-9,]+ tokens per request: [0-9.]+x' | sort -u
+----
+
+Expected result: `Model loading took 6.64 GiB`, `Available KV cache memory: 12.25 GiB`, a KV cache
+of about 1.3 million tokens, and a maximum concurrency of about 80 requests at the full
+16,384-token context. The weights are fixed; everything vLLM can still allocate becomes KV cache,
+and the KV cache decides how many requests run at once. A hybrid Mamba model needs far less cache
+per token than a pure transformer, which is why the number is so large.
+// UNVERIFIED
+
+== Evidence checkpoint
+
+Before continuing, verify that you can answer:
+
+* Which component answers "which image is version 3.0 of our model", and which answers "which
+  models does Red Hat validate"?
+* What is the difference between the 401 and the 403 you saw?
+* Where does the model server's GPU come from, and how would you prove it?
+* After the weights are loaded, what does vLLM do with the rest of its GPU memory, and why does it
+  matter?
+
+.Answer key
+[%collapsible]
+====
+* The model registry (yours, created from a `ModelRegistry` CR) records versions and artifacts;
+  the model catalog lists Red Hat's validated models.
+* 401: no token, so the proxy does not know who is calling. 403: a valid token, but that identity
+  has no RBAC permission to `get` the InferenceService.
+* From a DRA claim created from the `one-l4` template; `oc get resourceclaims` shows it allocated to
+  `gpu-0` and reserved for the predictor pod.
+* It reserves it as KV cache; the KV cache size bounds how many tokens, and therefore how many
+  concurrent requests, the server can hold.
+====
+
+Day 1 ends here. Leave the model running if you continue to Day 2 on the same cluster; Day 2
+starts by replacing it with a two-replica llm-d deployment.
+
+Proceed to xref:90-cleanup.adoc[Cleanup] if you stop here.

@@ -1,0 +1,10 @@
+---
+type: showroom
+
+default_width: 30
+persist_url_state: true
+
+# No tabs: the Showroom terminal is off (participants are cluster-admins and work in the console's
+# Web Terminal, as themselves), and a default console refuses to be framed (X-Frame-Options: DENY),
+# so a console tab would render blank. The guide links the console instead.
+tabs: []

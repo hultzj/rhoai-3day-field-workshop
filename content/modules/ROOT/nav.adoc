@@ -1,0 +1,15 @@
+* xref:index.adoc[Introduction]
+* xref:01-overview.adoc[Architecture and Control Boundaries]
+* xref:02-details.adoc[Prerequisites and Environment]
+
+.Day 1: GPU to served model (90 minutes)
+* xref:03-module-01-your-cluster.adoc[Module 1: Your cluster]
+* xref:04-module-02-gpus-dra.adoc[Module 2: GPUs the DRA way]
+* xref:05-module-03-onboard-model.adoc[Module 3: Onboard a model]
+
+.Wrap-up
+* xref:90-cleanup.adoc[Cleanup]
+* xref:91-reference.adoc[Technical Reference]
+
+.Facilitators
+* xref:92-facilitator-guide.adoc[Facilitator Guide]
