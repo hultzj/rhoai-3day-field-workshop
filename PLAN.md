@@ -95,8 +95,18 @@ Working document. Not rendered by Antora.
    (`lm_evaluation_harness`, `num_examples: 50`, `tokenizer: ibm-granite/granite-4.0-h-tiny`
    because the served name is not an HF repo); backup garak `quick` (~2 min). Docs say use a
    dedicated namespace, not `redhat-ods-applications`. MLflow must be enabled (Module 7) for
-   results to appear there. Spike before writing Module 8: job SA name, service-CA trust, HF egress,
-   payload field `id` vs `benchmark_id`.
+   results to appear there.
+   **Spike verified (2026-11-02, as `kuro`, namespace `ws-eval`):** `EvalHub` `v1` with
+   `tenancy: single`, `database: {type: sqlite}`, `providers: [lm-evaluation-harness, garak]` is
+   Ready in ~20 s (route `evalhub`, job SA `evalhub-ws-eval-job`). `/api/v1/health` is open; jobs API
+   401 without a token. Benchmark entries use `id` + `provider_id`. Against the Day 1
+   InferenceService (`https://granite4-tiny-predictor.ws-models.svc.cluster.local:8443/v1`):
+   without a CA the job fails `502` (proxy log `tls: bad certificate`); with a Secret `granite-ca`
+   holding key `ca_cert` (the `openshift-service-ca.crt` ConfigMap) referenced by
+   `model.auth.secret_ref` and a RoleBinding giving the job SA `get` on the InferenceService,
+   `arc_easy` 50 examples completes in 48 s: `acc 0.60`, `acc_norm 0.62` (stderr 0.07), default
+   test threshold 0.5 -> `pass: true`. Without the RoleBinding: `403` and the proxy logs
+   `Forbidden (user=system:serviceaccount:ws-eval:evalhub-ws-eval-job ...)`. HF egress worked.
 
 ## Lab map (lab slots from the agenda)
 
