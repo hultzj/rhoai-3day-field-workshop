@@ -72,15 +72,21 @@ xref:91-reference.adoc[Technical Reference] lists what that implies.
 
 == Exercise 1: Find the model in the catalog
 
-. Open the OpenShift AI dashboard: in the OpenShift console, click the application launcher (the
-  grid icon in the top bar) and choose *Red Hat OpenShift AI*.
-. In the left menu, open *AI hub* → *Catalog*.
-. Search for `granite-4.0-h-tiny` and open the card *granite-4.0-h-tiny-FP8-dynamic*.
-. Read the model card: provider, licence, size and the *Red Hat validated* label.
+. Open the OpenShift AI dashboard: in the OpenShift console, click the *Application launcher* (the
+  grid icon in the top bar) and, under *OpenShift Self Managed Services*, choose *Red Hat OpenShift
+  AI*. Log in again with the same identity provider if asked. Close the welcome tour if it opens.
+. In the left menu, open *AI hub* → *Models*. The page opens on its *Catalog* tab.
+. In the *Filter by name, description…* box (not the *Task* filter), type `granite-4.0-h-tiny` and
+  press Enter, then open the card *granite-4.0-h-tiny-FP8-dynamic*.
+. Read the card: the *Validated* badge, *Provided by IBM*, and in the details *Minimum vRAM*,
+  *Container size* and *Model location*.
 
-Expected result: the card shows `RedHatAI/granite-4.0-h-tiny-FP8-dynamic`, Apache-2.0 licence and
-about 6.9B parameters.
-// UNVERIFIED
+image::05-catalog-card.png[The granite-4.0-h-tiny-FP8-dynamic catalog card with the Validated badge, Deploy model and Register model buttons]
+
+Expected result: the card is titled `granite-4.0-h-tiny-FP8-dynamic`, *Validated*, *Provided by
+IBM*, with *Minimum vRAM* `8.20 GB`, *Container size* `7.13 GB` and *Model location*
+`{model_uri}`. The *Register model* and *Deploy model* buttons do in clicks what Exercises 3-5 do
+in YAML.
 
 The catalog is a service with an API, so the same facts, and the image to deploy, can be read from
 the terminal:
@@ -95,8 +101,8 @@ $CAT "http://localhost:8080/api/model_catalog/v1alpha1/sources/redhat_ai_validat
 ----
 
 Expected result: one model, `redhat_ai_validated_models  RedHatAI/granite-4.0-h-tiny-FP8-dynamic
-6.9B params`, and one artifact, `{model_uri}`. That URI is what KServe will pull.
-// UNVERIFIED
+6.9B params`, and one artifact, `{model_uri}`, the same location the card showed. That URI is what
+KServe will pull.
 
 == Exercise 2: Create a model registry
 
@@ -141,7 +147,6 @@ echo "$REGISTRY"
 
 Expected result: `modelregistry.modelregistry.opendatahub.io/{registry_name} condition met`, and
 the registry URL `https://{registry_name}-rest.{cluster_domain}/api/model_registry/v1alpha3`.
-// UNVERIFIED
 
 == Exercise 3: Record the model, its version and its artifact
 
@@ -153,30 +158,34 @@ curl -sk -o /dev/null -w 'anonymous: %{http_code}\n' "$REGISTRY/registered_model
 ----
 
 Expected result: `anonymous: 401`. The kube-rbac-proxy rejects requests without a token.
-// UNVERIFIED
 
-Now record the model, version `3.0`, and the artifact that points at the modelcar:
+Now record the model, version `3.0`, and the artifact that points at the modelcar. Each record is
+created only if a lookup by name finds none, so the block is safe to run again:
 
 [source,bash,role="execute",subs="attributes+"]
 ----
 AUTH="Authorization: Bearer $(oc whoami -t)"
-RM_ID=$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST "$REGISTRY/registered_models" \
+reg() { curl -sk -H "$AUTH" -H 'Content-Type: application/json' "$@"; }
+RM_ID=$(reg "$REGISTRY/registered_model?name=granite-4.0-h-tiny-fp8" | jq -r '.id // empty')
+[ -n "$RM_ID" ] || RM_ID=$(reg -X POST "$REGISTRY/registered_models" \
   -d "{\"name\":\"granite-4.0-h-tiny-fp8\",\"description\":\"{model_display}, Red Hat validated\",\"owner\":\"$(oc whoami)\"}" | jq -r .id)
-MV_ID=$(curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST "$REGISTRY/model_versions" \
+MV_ID=$(reg "$REGISTRY/model_version?name=3.0&parentResourceId=$RM_ID" | jq -r '.id // empty')
+[ -n "$MV_ID" ] || MV_ID=$(reg -X POST "$REGISTRY/model_versions" \
   -d "{\"name\":\"3.0\",\"registeredModelId\":\"$RM_ID\",\"author\":\"$(oc whoami)\"}" | jq -r .id)
-curl -sk -H "$AUTH" -H 'Content-Type: application/json' -X POST "$REGISTRY/model_versions/$MV_ID/artifacts" \
-  -d '{"artifactType":"model-artifact","name":"granite-4.0-h-tiny-fp8-modelcar","uri":"{model_uri}","modelFormatName":"vLLM","modelFormatVersion":"1"}' | jq '{id, uri, modelFormatName}'
+[ "$(reg "$REGISTRY/model_versions/$MV_ID/artifacts" | jq '.size')" -gt 0 ] || reg -X POST "$REGISTRY/model_versions/$MV_ID/artifacts" \
+  -d '{"artifactType":"model-artifact","name":"granite-4.0-h-tiny-fp8-modelcar","uri":"{model_uri}","modelFormatName":"vLLM","modelFormatVersion":"1"}' >/dev/null
 echo "registered model id: $RM_ID, version id: $MV_ID"
-curl -sk -H "$AUTH" "$REGISTRY/registered_models/$RM_ID/versions" | jq -r '.items[] | "\(.name) \(.state)"'
+reg "$REGISTRY/model_versions/$MV_ID/artifacts" | jq '.items[] | {name, uri, modelFormatName}'
+reg "$REGISTRY/registered_models/$RM_ID/versions" | jq -r '.items[] | "\(.name) \(.state)"'
 ----
 
-Expected result: the artifact prints with `"uri": "{model_uri}"` and `"modelFormatName": "vLLM"`;
-the IDs print (`1` and `2` on a fresh registry); and the version list shows `3.0 LIVE`. The
+Expected result: `registered model id: 1, version id: 2` (IDs as on a fresh registry); one artifact
+with `"uri": "{model_uri}"` and `"modelFormatName": "vLLM"`; and the version list shows `3.0 LIVE`. The
 registry now answers "which image is version 3.0 of this model" for anyone allowed to ask.
-// UNVERIFIED
 
-GUI view: in the OpenShift AI dashboard, *AI hub* → *Registry*, select `{registry_name}`: the model
-`granite-4.0-h-tiny-fp8` with version `3.0`.
+GUI view: in the OpenShift AI dashboard, *AI hub* → *Models* → *Registry* tab, model registry
+`{registry_name}`: the model `granite-4.0-h-tiny-fp8`, latest version `3.0`, owner your user, and
+*Deployments* `-` (nothing deployed yet).
 
 == Exercise 4: Prepare the serving project
 
@@ -211,7 +220,6 @@ EOF
 Expected result: the project `{model_namespace}` exists with the label
 `opendatahub.io/dashboard=true` (so the dashboard lists it), and
 `resourceclaimtemplate.resource.k8s.io/one-l4 created`.
-// UNVERIFIED
 
 The runtime's key fields:
 
@@ -272,7 +280,6 @@ echo "template: $(oc process -n redhat-ods-applications vllm-cuda-runtime-templa
 
 Expected result: `servingruntime.serving.kserve.io/vllm-cuda-runtime created`, and the two image
 lines are identical: the runtime you wrote runs exactly the vLLM build the dashboard would have used.
-// UNVERIFIED
 
 == Exercise 5: Serve the model on the claimed GPU
 
@@ -295,7 +302,7 @@ spec:
 ----
 <1> *deploymentMode* — a plain Deployment and Service (no Knative); the standard mode for LLMs.
 <2> *enable-auth* — put kube-rbac-proxy in front of vLLM; callers need a token and RBAC.
-<3> *registry labels* — link the deployment to the registered model and version you recorded.
+<3> *registry labels* — name the registry, model and version this deployment came from, the labels the dashboard sets when it deploys from a registry. They do not tell the registry anything; Exercise 6 does that.
 <4> *resourceClaims* — the GPU, claimed exactly as the test pods did in Module 2.
 <5> *vLLM args* — context length, and tool calling with Granite 4's parser (used on Day 3).
 
@@ -333,7 +340,6 @@ EOF
 ----
 
 Expected result: `inferenceservice.serving.kserve.io/{model_name} created`.
-// UNVERIFIED
 
 Pulling the modelcar and starting vLLM takes several minutes. Wait for `Ready`:
 
@@ -349,9 +355,32 @@ Expected result: `inferenceservice.serving.kserve.io/{model_name} condition met`
 `https://{model_name}-{model_namespace}.{cluster_domain}`; and one claim, `{model_name}-predictor-…-gpu-…`,
 is allocated to `gpu-0` and reserved for the predictor pod. The model server holds the GPU through
 the same DRA mechanism as the test pods.
-// UNVERIFIED
+== Exercise 6: Record the deployment in the registry
 
-== Exercise 6: Prove who can call the model
+The registry does not watch the cluster. It knows about a deployment only when someone records it,
+which the dashboard does when you click *Deploy model* from a registered version. The registry's
+model is simple: a *serving environment* (here, your project) holds *inference services*, each
+pointing at a registered model and version. Record yours:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+SE_ID=$(reg "$REGISTRY/serving_environment?name={model_namespace}" | jq -r '.id // empty')
+[ -n "$SE_ID" ] || SE_ID=$(reg -X POST "$REGISTRY/serving_environments" -d '{"name":"{model_namespace}"}' | jq -r .id)
+[ -n "$(reg "$REGISTRY/inference_service?name={model_name}&parentResourceId=$SE_ID" | jq -r '.id // empty')" ] ||
+  reg -X POST "$REGISTRY/serving_environments/$SE_ID/inference_services" \
+    -d "{\"name\":\"{model_name}\",\"registeredModelId\":\"$RM_ID\",\"modelVersionId\":\"$MV_ID\",\"runtime\":\"vllm-cuda-runtime\",\"desiredState\":\"DEPLOYED\",\"servingEnvironmentId\":\"$SE_ID\"}" >/dev/null
+reg "$REGISTRY/inference_services" | jq -r '.items[] | "\(.name) model=\(.registeredModelId) version=\(.modelVersionId) \(.desiredState)"'
+----
+
+Expected result: `{model_name} model=1 version=2 DEPLOYED` (IDs as on a fresh registry): the
+registry now records which version runs in `{model_namespace}`. The registry can now answer "where is version 3.0 running?".
+
+GUI view: refresh *AI hub* → *Models* → *Registry*: the *Deployments* column for
+`granite-4.0-h-tiny-fp8` now reads `1 deployment`.
+
+image::05-registry-deployment.png[The field-registry model list showing granite-4.0-h-tiny-fp8, version 3.0, 1 deployment]
+
+== Exercise 7: Prove who can call the model
 
 Three callers: nobody, a ServiceAccount with no rights, and you.
 
@@ -367,7 +396,6 @@ curl -sk -o /dev/null -w 'you (cluster-admin): %\{http_code}\n' -H "Authorizatio
 Expected result: `anonymous: 401`, `SA without RBAC: 403`, `you (cluster-admin): 200`. 401 means
 "who are you?" (no token); 403 means "I know who you are, and you may not" (the ServiceAccount
 cannot `get` the InferenceService).
-// UNVERIFIED
 
 Now ask the model something, with a tool it may decide to call:
 
@@ -384,9 +412,8 @@ curl -sk "$URL/v1/chat/completions" -H "Authorization: Bearer $(oc whoami -t)" -
 Expected result: `"finish": "tool_calls"` and one tool call to `get_weather` with arguments
 `{"city": "Seoul"}`, plus a `usage` block counting prompt and completion tokens. The model did not
 answer; it asked the caller to run a tool. That is the building block of the Day 3 agent.
-// UNVERIFIED
 
-== Exercise 7: Read what vLLM did with the GPU
+== Exercise 8: Read what vLLM did with the GPU
 
 vLLM reports how it split the GPU's memory at startup.
 
@@ -401,7 +428,6 @@ of about 1.3 million tokens, and a maximum concurrency of about 80 requests at t
 16,384-token context. The weights are fixed; everything vLLM can still allocate becomes KV cache,
 and the KV cache decides how many requests run at once. A hybrid Mamba model needs far less cache
 per token than a pure transformer, which is why the number is so large.
-// UNVERIFIED
 
 == Evidence checkpoint
 

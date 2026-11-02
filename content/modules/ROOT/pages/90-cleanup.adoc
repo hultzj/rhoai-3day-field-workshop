@@ -15,9 +15,9 @@ oc get gpucluster,nvidiadriver --ignore-not-found
 oc get nodefeaturediscovery -n openshift-nfd --ignore-not-found
 ----
 
-Expected result: the projects, the `{registry_name}` registry and the `gpu-cluster` and
-`gpu-driver` CRs and the `nfd-instance` you created are listed (whichever exist).
-// UNVERIFIED
+Expected result: whichever exist of: projects `{gpu_namespace}` and `{model_namespace}` (`Active`),
+the `{registry_name}` registry (`AVAILABLE True`), `gpucluster.nvidia.com/gpu-cluster` and
+`nvidiadriver.nvidia.com/gpu-driver` (`ready`), and `nfd-instance`.
 
 Then delete them, model server and registry first, the GPU stack last:
 
@@ -34,7 +34,6 @@ oc get deviceclass -o name | grep nvidia || echo "no NVIDIA device classes"
 Expected result: the deletions complete, and the last line prints `no NVIDIA device classes`: the
 DRA stack and driver are gone. The labels NFD put on the nodes (`feature.node.kubernetes.io/…`)
 stay until someone removes them, so Module 1's "no NVIDIA PCI label" check would now print `true`.
-// UNVERIFIED
 
 WARNING: Deleting the project in which your Web Terminal runs closes the terminal. The Web Terminal
 runs in its own project (`openshift-terminal` by default), so the commands above do not touch it.
@@ -69,3 +68,14 @@ oc get csv -A --no-headers | awk '{print $1, $2}' | sort -u -k2,2 | grep -E 'nfd
 
 Delete each listed CSV in its namespace (`oc delete csv <name> -n <namespace>`) only if no other
 workload on the cluster uses that operator; RHCL and the Web Terminal are often shared.
+
+To reuse the cluster for another class, also remove the labels NFD left on the nodes, so Module 1
+starts from an unrecognised GPU again. Look first, then remove:
+
+[source,bash]
+----
+oc get nodes -o json | jq -r '.items[] | .metadata.name as $n | .metadata.labels | keys[] | select(startswith("feature.node.kubernetes.io/")) | "\($n) \(.)"' | sort | uniq | head
+for n in $(oc get nodes -o name); do
+  oc label "$n" $(oc get "$n" -o json | jq -r '.metadata.labels | keys[] | select(startswith("feature.node.kubernetes.io/pci-")) | . + "-"')
+done
+----

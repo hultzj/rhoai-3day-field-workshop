@@ -26,12 +26,12 @@ Provided by the facilitator:
 
 . Open the OpenShift console:
   link:https://console-openshift-console.{cluster_domain}[console-openshift-console.{cluster_domain}^].
-. Choose the identity provider your facilitator named and log in with your user and password.
-. Check the user menu (top right): it shows your user name.
+. Choose the identity provider your facilitator named (on the test cluster, *keycloak*) and log in
+  with your user and password.
+. Check the user menu (top right).
 
-Expected result: the console opens in the *Administrator* perspective and the user menu shows your
-user name.
-// UNVERIFIED
+Expected result: the console opens on *Overview* with *Core platform* at the top of the left
+navigation, and the user menu (top right) shows your name, for example `Kuro Admin`.
 
 The command-line pre-flight is the first exercise of
 xref:03-module-01-your-cluster.adoc[Module 1], run in the Web Terminal.

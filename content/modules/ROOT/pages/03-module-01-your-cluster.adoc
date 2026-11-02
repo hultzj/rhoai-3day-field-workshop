@@ -48,9 +48,13 @@ would hand your cluster-admin rights to anyone with the URL.
 
 == Exercise 1: Open the Web Terminal and check who you are
 
-. In the OpenShift console, click the *>_* (Web Terminal) icon in the top bar.
-. If asked for a project, keep the default and click *Start*.
-. Wait until a shell prompt appears in the panel at the bottom of the console.
+. In the OpenShift console, click the *Command line terminal* icon (*>_*) in the top bar. In a
+  narrow browser window the top bar folds it into the *Utility menu* (*⋮*).
+. The *OpenShift command line terminal* panel opens at the bottom with *Initialize terminal*.
+  Keep the *Project* `openshift-terminal` and click *Start*.
+. Wait until the panel shows `Welcome to the OpenShift Web Terminal` and a `bash` prompt.
+
+image::03-web-terminal-start.png[The Initialize terminal panel with Project openshift-terminal and the Start button]
 
 Then run:
 
@@ -60,10 +64,10 @@ oc whoami
 oc auth can-i '*' '*' --all-namespaces
 ----
 
-Expected result: `oc whoami` prints your user name (the facilitator gave it to you), and
-`oc auth can-i` prints `yes`, which means your user may perform any action on any resource:
-cluster-admin. Every later command runs with these rights.
-// UNVERIFIED
+Expected result: `oc whoami` prints your user name (the one the facilitator gave you, for example
+`kuro`), and `oc auth can-i` prints `yes`: your user may perform any action on any resource, which
+is cluster-admin. Every later command runs with these rights. The terminal has `oc`, `jq`, `curl`
+and `git`; the guide uses nothing else.
 
 In short: you are a cluster administrator, acting as yourself, from a terminal that lives on the
 cluster.
@@ -79,9 +83,8 @@ oc get nodes -o custom-columns=NODE:.metadata.name,INSTANCE:.metadata.labels.nod
   | grep -E 'NODE|nvidia.com/gpu'
 ----
 
-Expected result: one node, instance type `g6.2xlarge` (8 vCPUs and one NVIDIA L4 GPU), tainted with
-`nvidia.com/gpu`.
-// UNVERIFIED
+Expected result: the header and exactly one node, instance type `g6.2xlarge` (8 vCPUs and one
+NVIDIA L4 GPU), with taint `nvidia.com/gpu`.
 
 == Exercise 3: Show that the GPU is not usable yet (negative control)
 
@@ -97,11 +100,11 @@ echo "GPU device classes:"; oc get deviceclass -o name | grep nvidia || echo "no
 echo "driver pods:"; oc get pods -n nvidia-gpu-operator -o name | grep -E 'driver|dra' || echo "none"
 ----
 
-Expected result: the NVIDIA PCI label is empty (no hardware discovery has run); the node's
-allocatable resources list `cpu`, `memory`, `pods` and storage, but no `nvidia.com/gpu`; there are
-no NVIDIA device classes; and no driver or DRA pods run. The hardware is present, but the cluster
-neither knows it is a GPU nor can schedule anything onto it. Module 2 adds the missing layers.
-// UNVERIFIED
+Expected result: `NVIDIA PCI label on <node>:` is followed by nothing (no hardware discovery has
+run); allocatable is `{"cpu":"7500m","ephemeral-storage":…,"memory":"29423584Ki","pods":"250"}`
+with no `nvidia.com/gpu`; `GPU device classes:` prints `none`; `driver pods:` prints `none`. The
+hardware is present, but the cluster neither knows it is a GPU nor can schedule anything onto it.
+Module 2 adds the missing layers.
 
 == Exercise 4: Take an inventory of operators and OpenShift AI
 
@@ -111,11 +114,11 @@ oc get csv -A --no-headers 2>/dev/null | awk '{print $2, $NF}' | sort -u | grep 
 oc get datasciencecluster -o jsonpath='{range .items[*].status.conditions[?(@.status=="True")]}{.type}{"\n"}{end}' | grep -E 'Ready|KserveReady|ModelRegistryReady|DashboardReady'
 ----
 
-Expected result: each listed operator CSV shows `Succeeded`, among them `nfd`,
-`gpu-operator-certified.v{gpu_operator_version}`, `rhcl-operator`, `web-terminal` and
-`rhods-operator` (OpenShift AI {rhoai_version}); the DataScienceCluster reports `Ready`,
-`KserveReady` and `ModelRegistryReady`. Operators are installed, but nothing is configured yet.
-// UNVERIFIED
+Expected result: every listed CSV shows `Succeeded`: `nfd.4.20…`,
+`gpu-operator-certified.v{gpu_operator_version}`, `rhcl-operator.v1.4.3` with the `authorino-operator` and
+`limitador-operator` it depends on, `web-terminal.v1.17.1` and `rhods-operator.3.5.2` (OpenShift AI
+{rhoai_version}). The DataScienceCluster conditions include `Ready`, `KserveReady`,
+`ModelRegistryReady` and `DashboardReady`. Operators are installed, but nothing is configured yet.
 
 .The scripted assertion for this module
 [%collapsible]

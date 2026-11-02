@@ -133,10 +133,10 @@ oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true \
   -o custom-columns=NODE:.metadata.name,INSTANCE:.metadata.labels.node\\.kubernetes\\.io/instance-type
 ----
 
-Expected result: exactly one node is listed, the `g6.2xlarge` GPU node you found in Module 1. The
+Expected result: after a few `waiting for NFD labels...` lines, exactly one node is listed, the
+`g6.2xlarge` GPU node you found in Module 1. The
 cluster now knows which node has an NVIDIA device; every later NVIDIA component selects its nodes
 by this label.
-// UNVERIFIED
 
 == Exercise 2: Load the NVIDIA driver
 
@@ -186,7 +186,6 @@ EOF
 
 Expected result: `nvidiadriver.nvidia.com/gpu-driver created`. Creation alone proves nothing; the
 next block waits for the driver to load.
-// UNVERIFIED
 
 The driver container needs a few minutes to start and load the kernel modules. Wait for the CR to
 report `ready`:
@@ -202,11 +201,11 @@ oc exec -n nvidia-gpu-operator "$DRIVER_POD" -c nvidia-driver-ctr -- \
   nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
 ----
 
-Expected result: the loop ends on `driver state: ready`, and `nvidia-smi` prints one row:
+Expected result: `driver state: notReady` repeats for two to three minutes while the driver container
+loads the kernel modules, then the loop ends on `driver state: ready`, and `nvidia-smi` prints one row:
 `NVIDIA L4, 23034 MiB, 595.91.07` (or the driver version the operator shipped). The kernel
 driver is loaded and talks to the GPU, but the scheduler still cannot hand it out: that is the
 next exercise.
-// UNVERIFIED
 
 In short: the driver makes the GPU work on the node; it does not make it schedulable.
 
@@ -260,7 +259,6 @@ Expected result: the loop ends on `gpucluster state: ready`, and `nvidia-gpu-ope
 `nvidia-dra-driver-kubelet-plugin-…`, `nvidia-dra-validator-…` and `nvidia-dcgm-exporter-dra-…`
 next to the driver pod, all `Running`. There is no device plugin pod: this stack never advertises
 `nvidia.com/gpu`.
-// UNVERIFIED
 
 == Exercise 4: Read what DRA publishes
 
@@ -277,7 +275,6 @@ Expected result: three device classes, `gpu.nvidia.com`, `mig.nvidia.com` and
 GPU node's ResourceSlice lists one device, `gpu-0: NVIDIA L4, Ada Lovelace, memory 23034Mi,
 driver 595.91.7, CUDA 8.9.0`. The scheduler now knows what the device _is_, not just that one
 exists.
-// UNVERIFIED
 
 In short: a DeviceClass is a selector over the attributes a driver publishes in ResourceSlices.
 
@@ -366,7 +363,6 @@ Expected result: `smi-a` becomes Ready and prints `GPU 0: NVIDIA L4 (UUID: GPU-�
 exist, one per pod, created from the template: `smi-a-gpu-…` is allocated to device `gpu-0` and
 reserved for `smi-a`; `smi-b-gpu-…` has no device. The scheduler allocated the GPU to the first pod
 before placing it.
-// UNVERIFIED
 
 == Exercise 6: Two negative controls
 
@@ -379,10 +375,11 @@ oc get events -n {gpu_namespace} --field-selector involvedObject.name=smi-b,reas
   -o jsonpath='{.items[-1:].message}{"\n"}'
 ----
 
-Expected result: `smi-b` is `Pending`, and the last `FailedScheduling` event says `… cannot
-allocate all claims …`. An exclusive claim really is exclusive: the scheduler will not place a
+Expected result: `smi-b` is `Pending`, and the last `FailedScheduling` event reads `0/8 nodes are
+available: 3 node(s) had untolerated taint(s), 5 cannot allocate all claims. …` (the node counts
+depend on your cluster): three control-plane nodes are excluded by taints the pod does not
+tolerate, and on every other node, the GPU node included, no device can satisfy the claim. An exclusive claim really is exclusive: the scheduler will not place a
 second pod on a GPU that is already allocated.
-// UNVERIFIED
 
 Now free the GPU and ask for a device that does not exist on this cluster, an H100:
 
@@ -433,7 +430,6 @@ oc get events -n {gpu_namespace} --field-selector involvedObject.name=smi-h100,r
 Expected result: `smi-h100` stays `Pending` even though the GPU is now free, with the same
 `cannot allocate all claims` reason: the only GPU's `productName` is `NVIDIA L4`, so the selector
 matches no device. Selectors are enforced by the scheduler, not by the workload.
-// UNVERIFIED
 
 .The scripted assertion for this exercise
 [%collapsible]
@@ -464,7 +460,6 @@ oc delete pod smi-h100 -n {gpu_namespace} --wait=true
 ----
 
 Expected result: `pod "smi-h100" deleted`.
-// UNVERIFIED
 
 == Exercise 7: Share one GPU between two pods
 
@@ -517,7 +512,6 @@ GPU-…)`, with an identical UUID; the claim is allocated to `gpu-0` and reserve
 share-b`. Sharing is a property of the claim, visible in the API, not a hidden node setting. Both
 processes share the GPU's memory and compute with no isolation between them, so each workload must
 be sized to leave room for the other (Day 2 does exactly this for two model replicas).
-// UNVERIFIED
 
 In short: template = one device per pod; standalone claim = one device for every pod that names it.
 
@@ -531,7 +525,6 @@ oc get resourceclaim shared-l4 -n {gpu_namespace} -o jsonpath='reserved for: [{.
 
 Expected result: `reserved for: [] device: []`. The claim still exists, but once no pod reserves
 it, Kubernetes releases its allocation, so the GPU is free for the next claim.
-// UNVERIFIED
 
 == Evidence checkpoint
 
