@@ -76,6 +76,7 @@ starts from an unrecognised GPU again. Look first, then remove:
 ----
 oc get nodes -o json | jq -r '.items[] | .metadata.name as $n | .metadata.labels | keys[] | select(startswith("feature.node.kubernetes.io/")) | "\($n) \(.)"' | sort | uniq | head
 for n in $(oc get nodes -o name); do
-  oc label "$n" $(oc get "$n" -o json | jq -r '.metadata.labels | keys[] | select(startswith("feature.node.kubernetes.io/pci-")) | . + "-"')
+  l=$(oc get "$n" -o json | jq -r '.metadata.labels | keys[] | select(startswith("feature.node.kubernetes.io/pci-")) | . + "-"')
+  [ -z "$l" ] || oc label "$n" $l
 done
 ----

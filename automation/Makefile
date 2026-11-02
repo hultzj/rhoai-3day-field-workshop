@@ -64,5 +64,8 @@ status:
 verify:
 	GITOPS_NS=$(GITOPS_NS) bash "$(AUTOMATION_DIR)/verify.sh"
 
+# Then the namespaces bootstrap created itself (Argo CD destinations it never owned, e.g. ws-platform);
+# every namespace carrying this lab's part-of label is the lab's (guard-namespaces.sh enforces that).
 teardown:
 	oc delete -f "$(AUTOMATION_DIR)/bootstrap.yaml" --ignore-not-found --wait=true
+	oc delete namespace -l app.kubernetes.io/part-of=$(LAB_APP) --ignore-not-found --wait=true
