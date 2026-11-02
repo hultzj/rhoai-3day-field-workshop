@@ -4,7 +4,7 @@
 [gate]
 checks = [
   { name = "build",     cmd = "npm run --silent build" },
-  { name = "check-lab", cmd = "bash scripts/check-lab.sh --draft" },
+  { name = "check-lab", cmd = "bash scripts/check-lab.sh" },
   { name = "shell",     cmd = "for f in automation/*.sh automation/tests/*.sh scripts/*.sh; do bash -n $f || exit 1; done" },
   { name = "selftest",  cmd = "bash automation/tests/selftest.sh" },
 ]
