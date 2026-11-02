@@ -85,8 +85,18 @@ Working document. Not rendered by Antora.
 1-4. Resolved (see Decisions).
 5. MaaS: RHCL 1.4.3 now installed reusing the standalone Authorino (no OLM conflict). Still to
    verify: Kuadrant instance + MaaS on top of it.
-6. EvalHub (`evalhubs.trustyai.opendatahub.io`) API and a CPU/GPU-cheap benchmark: source is
-   `hyogrin/rhoai-evalhub-lab` (not yet read).
+6. EvalHub (researched 2026-11-02, not yet run): GA in OpenShift AI 3.5 (LMEvalJob deprecated in its
+   favour). `EvalHub` CR `trustyai.opendatahub.io/v1` needs `spec.database.type` (`sqlite` or
+   `postgresql`); `providers` default `[garak, garak-kfp, lm-evaluation-harness]` (add `guidellm` to
+   use it); `tenancy: single|multi`. No CR for evaluations: REST `POST /api/v1/evaluations/jobs`
+   (Bearer token + `X-Tenant: <ns>`), jobs run as plain `batch/v1` Jobs with an auth sidecar. Model
+   auth: kube-rbac-proxy InferenceService -> grant the job ServiceAccount `get` on it; MaaS -> Secret
+   `api-key` referenced by `model.auth.secret_ref`. Candidate benchmark: `arc_easy`
+   (`lm_evaluation_harness`, `num_examples: 50`, `tokenizer: ibm-granite/granite-4.0-h-tiny`
+   because the served name is not an HF repo); backup garak `quick` (~2 min). Docs say use a
+   dedicated namespace, not `redhat-ods-applications`. MLflow must be enabled (Module 7) for
+   results to appear there. Spike before writing Module 8: job SA name, service-CA trust, HF egress,
+   payload field `id` vs `benchmark_id`.
 
 ## Lab map (lab slots from the agenda)
 
@@ -105,6 +115,16 @@ Working document. Not rendered by Antora.
 
 Each module follows the skill's template (why, glossary, technical context, objectives, exercises
 with Expected results, a negative control or break-and-restore, evidence checkpoint).
+
+## Status (2026-11-02)
+
+- Day 1 (Modules 1-3): written, reviewed (xreview: 3 rounds on the draft + 3 rounds on the
+  verification changes), verified live as `kuro`, clean teardown/re-bootstrap/re-walk passed, CI green,
+  published at https://hultzj.github.io/rhoai-3day-field-workshop/.
+- Day 2: blocked until `llmisvc-controller-manager` is restarted (it cached "no AuthPolicy CRD" from
+  before RHCL was installed); the restart was denied to the agent and is with the cluster owner.
+- Test-cluster leftover: registry record `probe-create-path` (UNDEPLOYED) from testing Exercise 6's
+  create path; the registry API refuses deletes (405), so it goes with the registry at cleanup.
 
 ## Build order
 
