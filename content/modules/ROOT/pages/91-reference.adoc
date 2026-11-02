@@ -62,8 +62,10 @@
   isolation. Use MIG or a supported sharing mode where isolation matters.
 * *Performance.* One L4 per cluster demonstrates mechanisms; it does not predict latency or
   throughput on production hardware.
-* *Registry-to-deployment linkage.* The InferenceService carries the registry labels the dashboard
-  uses; the lab does not claim the registry records the deployment itself.
+* *Automatic registry-to-deployment linkage.* The registry does not watch the cluster: the
+  InferenceService's registry labels alone left the dashboard's *Deployments* column at `-`. Module 3
+  records the deployment explicitly through the registry API (serving environment and inference
+  service), after which the dashboard shows `1 deployment`.
 
 == Sources and further reading
 

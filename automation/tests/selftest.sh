@@ -35,6 +35,44 @@ oc() { return 1; }; export -f oc
 guard && fail "guard accepted when oc failed"
 unset -f oc
 
+# teardown-csvs.sh, with oc stubbed (cluster state in files): record keeps only CSVs installed by this
+# lab's Subscriptions; delete removes exactly those; a failed delete keeps the record so a rerun finishes.
+st=$(mktemp -d); export ST=$st
+oc() {
+  local a="$*"
+  case "$a" in
+    "get subscriptions.operators.coreos.com -A -l app.kubernetes.io/part-of=lab "*) cat "$ST/subs" ;;
+    "get configmap lab-installed-csvs "*) [[ -e $ST/cm ]] && cat "$ST/cm"; return 0 ;;
+    "create configmap lab-installed-csvs "*) a=${a#*--from-literal=csvs=}; printf '%s' "${a% --dry-run*}" >"$ST/cm.new" ;;
+    "apply -f -") cat >/dev/null; mv "$ST/cm.new" "$ST/cm" ;;
+    "delete csv "*) echo "$3/$5" >>"$ST/attempts"; [[ -e $ST/fail-once ]] && { rm "$ST/fail-once"; return 1; }
+                    echo "$3/$5" >>"$ST/deleted" ;;
+    "delete configmap lab-installed-csvs "*) rm -f "$ST/cm" ;;
+  esac
+}; export -f oc
+# The label selector returns only this lab's Subscriptions; a foreign web-terminal Subscription elsewhere
+# is never listed, so its CSV can never be recorded.
+printf 'openshift-operators web-terminal.v1\nopenshift-nfd nfd.v1\nopenshift-auth-operator \n' >"$st/subs"
+bash automation/teardown-csvs.sh record lab || fail "record failed"
+[ "$(cat "$st/cm")" = "$(printf 'openshift-nfd nfd.v1\nopenshift-operators web-terminal.v1')" ] ||
+  fail "record saved '$(cat "$st/cm")'"
+: >"$st/subs"   # the Applications are gone: no Subscriptions left
+touch "$st/fail-once"
+bash automation/teardown-csvs.sh record lab || fail "second record failed"
+bash automation/teardown-csvs.sh delete lab >/dev/null 2>&1 && fail "delete reported success although a delete failed"
+[ -e "$st/cm" ] || fail "the record was dropped although a delete failed"
+bash automation/teardown-csvs.sh delete lab >/dev/null 2>&1 || fail "rerun of delete failed"
+[ -e "$st/cm" ] && fail "the record survived a fully successful delete"
+[ "$(sort -u "$st/deleted" | tr '\n' ' ')" = "nfd.v1/openshift-nfd web-terminal.v1/openshift-operators " ] ||
+  fail "deleted '$(sort -u "$st/deleted" | tr '\n' ' ')'"
+unset -f oc; rm -rf "$st"
+
+# If recording ownership fails, make teardown must stop before deleting anything.
+oc() { case "$1" in get) return 1 ;; delete) echo UNEXPECTED_DELETE ;; esac; return 0; }; export -f oc
+out=$(make --no-print-directory -C automation teardown 2>&1) && fail "teardown succeeded although recording CSV ownership failed"
+grep -q UNEXPECTED_DELETE <<<"$out" && fail "teardown deleted something after recording failed"
+unset -f oc
+
 # Render the platform child exactly as the parent passes it, per profile.
 platform() {
   local tmp; tmp=$(mktemp)

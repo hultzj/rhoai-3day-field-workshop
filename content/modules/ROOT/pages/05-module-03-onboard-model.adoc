@@ -355,6 +355,7 @@ Expected result: `inferenceservice.serving.kserve.io/{model_name} condition met`
 `https://{model_name}-{model_namespace}.{cluster_domain}`; and one claim, `{model_name}-predictor-…-gpu-…`,
 is allocated to `gpu-0` and reserved for the predictor pod. The model server holds the GPU through
 the same DRA mechanism as the test pods.
+
 == Exercise 6: Record the deployment in the registry
 
 The registry does not watch the cluster. It knows about a deployment only when someone records it,
@@ -368,11 +369,13 @@ SE_ID=$(reg "$REGISTRY/serving_environment?name={model_namespace}" | jq -r '.id 
 [ -n "$SE_ID" ] || SE_ID=$(reg -X POST "$REGISTRY/serving_environments" -d '{"name":"{model_namespace}"}' | jq -r .id)
 [ -n "$(reg "$REGISTRY/inference_service?name={model_name}&parentResourceId=$SE_ID" | jq -r '.id // empty')" ] ||
   reg -X POST "$REGISTRY/serving_environments/$SE_ID/inference_services" \
-    -d "{\"name\":\"{model_name}\",\"registeredModelId\":\"$RM_ID\",\"modelVersionId\":\"$MV_ID\",\"runtime\":\"vllm-cuda-runtime\",\"desiredState\":\"DEPLOYED\",\"servingEnvironmentId\":\"$SE_ID\"}" >/dev/null
+    -d "{\"name\":\"{model_name}\",\"registeredModelId\":\"$RM_ID\",\"modelVersionId\":\"$MV_ID\",\"runtime\":\"vllm-cuda-runtime\",\"desiredState\":\"DEPLOYED\",\"servingEnvironmentId\":\"$SE_ID\"}" \
+    | jq -r 'if .id then "recorded: \(.name)" else "registry refused: \(.message // .)" end'
 reg "$REGISTRY/inference_services" | jq -r '.items[] | "\(.name) model=\(.registeredModelId) version=\(.modelVersionId) \(.desiredState)"'
 ----
 
-Expected result: `{model_name} model=1 version=2 DEPLOYED` (IDs as on a fresh registry): the
+Expected result: on the first run `recorded: {model_name}` (a re-run skips the record and prints
+only the list), then `{model_name} model=1 version=2 DEPLOYED` (IDs as on a fresh registry): the
 registry now records which version runs in `{model_namespace}`. The registry can now answer "where is version 3.0 running?".
 
 GUI view: refresh *AI hub* → *Models* → *Registry*: the *Deployments* column for

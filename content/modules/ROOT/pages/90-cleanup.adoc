@@ -58,16 +58,20 @@ make -C automation teardown
 oc get namespace {showroom_namespace} --ignore-not-found
 ----
 
-The last command prints nothing once deletion completes. Argo CD deletes the operator
-Subscriptions it created, not the installed operators (CSVs) or their CRDs. List what remains:
+The last command prints nothing once deletion completes. Teardown removes the Applications, then
+exactly the operators (CSVs) its own Subscriptions installed (NFD, GPU Operator, RHCL, Web Terminal;
+recorded in the ConfigMap `rhoai-3day-field-workshop-installed-csvs` in `openshift-gitops` just
+before), then the namespaces it created. If it stops
+part way, run it again: each step is safe to repeat. It leaves behind the operators OLM installed
+as dependencies (Authorino, Limitador and the DNS operator for RHCL; DevWorkspace for the Web
+Terminal) and all CRDs. List what remains:
 
 [source,bash]
 ----
-oc get csv -A --no-headers | awk '{print $1, $2}' | sort -u -k2,2 | grep -E 'nfd|gpu-operator-certified|rhcl-operator|web-terminal|devworkspace'
+oc get csv -A --no-headers | awk '{print $1, $2}' | sort -u -k2,2 | grep -E 'nfd|gpu-operator-certified|rhcl-operator|web-terminal|devworkspace|authorino|limitador|dns-operator'
 ----
 
-Delete each listed CSV in its namespace (`oc delete csv <name> -n <namespace>`) only if no other
-workload on the cluster uses that operator; RHCL and the Web Terminal are often shared.
+Delete a dependency's CSV and Subscription only if nothing else on the cluster uses it.
 
 To reuse the cluster for another class, also remove the labels NFD left on the nodes, so Module 1
 starts from an unrecognised GPU again. Look first, then remove:

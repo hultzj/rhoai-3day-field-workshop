@@ -72,6 +72,12 @@ else
   fail "automation/argocd does not render"
 fi
 
+# A heading glued to the previous line renders as paragraph text (and escapes the checks below).
+for page in "$pages"/*.adoc; do
+  awk -v f="$page" 'NR > 1 && /^=+ / && prev != "" && prev !~ /^(:|\/\/|\[)/ { print f ":" NR ": heading not preceded by a blank line"; bad = 1 }
+    { prev = $0 } END { exit bad }' "$page" >&2 || failed=1
+done
+
 # Every exercise, GUI-only ones included, states an Expected result.
 for page in "$pages"/*.adoc; do
   awk -v f="$page" '
