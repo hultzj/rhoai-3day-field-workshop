@@ -126,6 +126,21 @@ Working document. Not rendered by Antora.
 Each module follows the skill's template (why, glossary, technical context, objectives, exercises
 with Expected results, a negative control or break-and-restore, evidence checkpoint).
 
+## MLflow spike (2026-11-02, as `kuro`) for Module 7
+
+- DSC `spec.components.mlflowoperator.managementState: Managed` -> `MLflowOperatorReady=True` in
+  ~20 s; CRDs `mlflows.mlflow.opendatahub.io` (v1), `mlflowconfigs.mlflow.kubeflow.org`.
+- `MLflow` `mlflow` (cluster-scoped; the operator deploys into `redhat-ods-applications`) with
+  `backendStoreUri`/`registryStoreUri: sqlite:////mlflow/mlflow.db`, `serveArtifacts: true`,
+  `artifactsDestination: file:///mlflow/artifacts`, `storage` 5Gi RWO: a migration Job runs first,
+  then `Available`, `status.version: 3.14.0`, URL `https://rh-ai.<domain>/mlflow`, in-cluster
+  `https://mlflow.redhat-ods-applications.svc:8443/mlflow`.
+- Tracking API: anonymous -> 302 (login); with a bearer token it needs a workspace:
+  `X-MLFLOW-WORKSPACE: <project>` (workspace = OpenShift project), else
+  `INVALID_PARAMETER_VALUE: Workspace context is required`.
+- Next: trace a tool-calling agent from a workbench (`mlflow.openai.autolog()`), then point EvalHub's
+  `experiment` at MLflow.
+
 ## Status (2026-11-02)
 
 - Day 1 (Modules 1-3): written, reviewed (xreview: 3 rounds on the draft + 3 rounds on the
