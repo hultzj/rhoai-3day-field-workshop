@@ -73,6 +73,9 @@ balancer without a Route.
 
 == Exercise 1: The MaaS database
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m5-ex1.mp4[width=100%]
+
 maas-api stores API keys in PostgreSQL. Create the credentials and the connection Secret first
 (MaaS fails to start without them), then the database. The password is generated in your terminal
 and never written anywhere else.
@@ -81,13 +84,14 @@ and never written anywhere else.
 ----
 # The password is generated once; the database keeps the one it was initialised with, and the
 # connection URL is always built from the stored password, so a re-run repairs a missing Secret.
+# The host is the Service's full name: maas-api runs in another namespace (redhat-ai-gateway-infra).
 oc get secret postgres-creds -n redhat-ods-applications >/dev/null 2>&1 ||
   oc create secret generic postgres-creds -n redhat-ods-applications --from-literal=POSTGRESQL_USER=maas \
     --from-literal=POSTGRESQL_PASSWORD="$(openssl rand -hex 16)" --from-literal=POSTGRESQL_DATABASE=maas
 if ! oc get secret maas-db-config -n redhat-ods-applications >/dev/null 2>&1; then
   PW=$(oc get secret postgres-creds -n redhat-ods-applications -o jsonpath='{.data.POSTGRESQL_PASSWORD}' | base64 -d)
   [ -n "$PW" ] && oc create secret generic maas-db-config -n redhat-ods-applications \
-    --from-literal=DB_CONNECTION_URL="postgresql://maas:$PW@postgres:5432/maas?sslmode=disable"
+    --from-literal=DB_CONNECTION_URL="postgresql://maas:$PW@postgres.redhat-ods-applications.svc.cluster.local:5432/maas?sslmode=disable"
   unset PW
 fi
 oc apply -n redhat-ods-applications -f - <<'EOF'
@@ -138,6 +142,9 @@ Expected result: the two Secrets are created (on a re-run they are left as they 
 Deployment and Service are created, and `deployment "postgres" successfully rolled out`.
 
 == Exercise 2: Create the Kuadrant instance
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m5-ex2.mp4[width=100%]
 
 The Connectivity Link operator is installed; the `Kuadrant` CR asks it to deploy Authorino and
 Limitador and start enforcing policies.
@@ -190,18 +197,21 @@ Expected result: the AuthPolicy reports `condition met` for `Enforced`, and both
 
 == Exercise 3: Find and fix the gateway-to-Authorino TLS mismatch (break and restore)
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m5-ex3.mp4[width=100%]
+
 Read what the gateway logs and how OpenShift AI configured it to reach Authorino:
 
 [source,bash,role="execute",subs="attributes+"]
 ----
 GW_POD=$(oc get pods -n openshift-ingress -l gateway.networking.k8s.io/gateway-name={inference_gateway} -o name | head -1)
-oc logs -n openshift-ingress "$GW_POD" --tail=50 | grep -m1 'kuadrant_wasm_shim'
+oc logs -n openshift-ingress "$GW_POD" --tail=50 | grep -m1 -o 'kuadrant_wasm_shim: gRPC status code is not OK'
 oc get envoyfilter {inference_gateway}-authn-ssl -n openshift-ingress \
   -o jsonpath='{.spec.configPatches[0].patch.value.transport_socket.name}{"\n"}'
 oc get authorino authorino -n kuadrant-system -o jsonpath='authorino listener TLS: {.spec.listener.tls}{"\n"}'
 ----
 
-Expected result: the gateway logs `kuadrant_wasm_shim: gRPC status code is not OK`; OpenShift AI's
+Expected result: the first line is the gateway's log message `kuadrant_wasm_shim: gRPC status code is not OK`; OpenShift AI's
 EnvoyFilter connects to Authorino with `envoy.transport_sockets.tls`; and the Authorino listener
 says `{"enabled":false}`. The gateway speaks TLS, Authorino expects plaintext, every authorization
 call fails, and the gateway fails closed with a 500.
@@ -230,6 +240,9 @@ by Authorino at the gateway, without touching the model.
 In short: a policy needs an enforcer, and the enforcer must speak the protocol the gateway expects.
 
 == Exercise 4: The MaaS gateway
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m5-ex4.mp4[width=100%]
 
 MaaS expects a Gateway named `{maas_gateway}` in `openshift-ingress`. This one is a cloud load
 balancer with a hostname under the cluster domain, using the cluster's default ingress certificate.
@@ -292,23 +305,37 @@ Expected result: `condition met` for `Programmed`; the address is an AWS load ba
 
 == Exercise 5: Enable MaaS
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m5-ex5.mp4[width=100%]
+
 [source,bash,role="execute",subs="attributes+"]
 ----
 oc patch datasciencecluster default-dsc --type merge \
   -p '{"spec":{"components":{"aigateway":{"managementState":"Managed","modelsAsAService":{"managementState":"Managed"}}}}}'
 until [ "$(oc get datasciencecluster default-dsc -o jsonpath='{.status.conditions[?(@.type=="AIGatewayReady")].status}')" = True ]; do sleep 10; done
 until oc get deploy maas-api -n redhat-ai-gateway-infra >/dev/null 2>&1; do sleep 5; done
+# maas-api reads the database URL from maas-db-config in its own namespace, once, at start-up.
+# OpenShift AI copies the Secret there when MaaS is first enabled and never updates the copy: sync it
+# from yours (no output of the URL), then restart maas-api so it reads it.
+oc get secret maas-db-config -n redhat-ods-applications -o jsonpath='{.data.DB_CONNECTION_URL}' | base64 -d |
+  oc create secret generic maas-db-config -n redhat-ai-gateway-infra --from-file=DB_CONNECTION_URL=/dev/stdin --dry-run=client -o yaml |
+  oc apply -f -
+oc rollout restart deploy/maas-api -n redhat-ai-gateway-infra
 oc rollout status deploy/maas-api -n redhat-ai-gateway-infra --timeout=300s
 oc get namespace {maas_namespace}
-MAAS=https://maas.$DOMAIN
+oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+export CURL_CA_BUNDLE=~/ingress-ca.crt
+MAAS=https://maas.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
 curl -s -o /dev/null -w 'maas-api anonymous: %\{http_code}\n' "$MAAS/maas-api/v1/models"
 curl -s -w '\n' -H "Authorization: Bearer $(oc whoami -t)" "$MAAS/maas-api/v1/models"
 ----
 
-Expected result: `AIGatewayReady` becomes `True`, `maas-api` rolls out in
+Expected result: `AIGatewayReady` becomes `True`; `secret/maas-db-config` is `created`, `configured`
+or `unchanged` in `redhat-ai-gateway-infra` (the copy maas-api actually reads); `deployment.apps/maas-api
+restarted`, and `maas-api` rolls out in
 `redhat-ai-gateway-infra`, the namespace `{maas_namespace}` is `Active`, anonymous gets `401`,
 and your token gets `{"data":[],"object":"list"}`: MaaS is running and protected, with no models
-published yet.
+published yet (on a cluster where the workshop ran before, models published then may still be listed).
 
 NOTE: In the first minute after the gateway and MaaS appear, a call can return `503` or an
 unrelated error while routes are programmed and DNS settles. This is expected. Wait 30 seconds and
@@ -332,6 +359,9 @@ After a dashboard refresh (it can take a minute), *Settings* gains *MaaS governa
 menu gains *Gen AI studio*.
 
 == Exercise 6: Meter usage
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m5-ex6.mp4[width=100%]
 
 Limitador runs in `kuadrant-system`, outside the `openshift-*` namespaces that the platform
 Prometheus scrapes. Turn on user-workload monitoring, and add a TelemetryPolicy so usage counters

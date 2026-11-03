@@ -70,14 +70,19 @@ oc delete maasmodelref {model_name} -n {model_namespace} --ignore-not-found
 oc delete maassubscription granite-gold granite-bronze -n {maas_namespace} --ignore-not-found
 oc delete maasauthpolicy granite-access -n {maas_namespace} --ignore-not-found
 oc delete llminferenceservice {model_name} -n {model_namespace} --ignore-not-found --wait=true
+# MaaS's own tenant resources go first, while its controller still runs to clear their finalizers
+# and remove what they own (maas-api with its database connection)
+oc delete maastenantconfigs.maas.opendatahub.io --all -n {maas_namespace} --ignore-not-found --wait=true
+oc delete aitenants.maas.opendatahub.io --all -n ai-tenants --ignore-not-found --wait=true
+oc delete deploy maas-api -n redhat-ai-gateway-infra --ignore-not-found --wait=true
 oc patch datasciencecluster default-dsc --type merge \
   -p '{"spec":{"components":{"aigateway":{"managementState":"Removed","modelsAsAService":{"managementState":"Removed"}}}}}'
+oc delete namespace {maas_namespace} redhat-ai-gateway-infra ai-tenants --ignore-not-found --wait=true
 oc delete resourceclaim shared-l4 -n {model_namespace} --ignore-not-found
 oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications --type merge \
   -p '{"spec":{"dashboardConfig":{"modelAsService":false,"observabilityDashboard":false}}}'
 oc delete telemetrypolicy maas-telemetry -n openshift-ingress --ignore-not-found
-# MaaS leaves these behind when set to Removed. Keep the {maas_namespace} namespace: its tenant
-# config carries a finalizer only the (now removed) MaaS controller can clear.
+# MaaS leaves these behind when set to Removed
 oc delete authpolicy maas-gateway-auth -n openshift-ingress --ignore-not-found
 oc delete envoyfilter payload-processing -n openshift-ingress --ignore-not-found
 oc delete gateway {maas_gateway} {inference_gateway} -n openshift-ingress --ignore-not-found
@@ -138,9 +143,13 @@ The last command prints nothing once deletion completes. Teardown removes the Ap
 exactly the operators (CSVs) its own Subscriptions installed (NFD, GPU Operator, RHCL, Web Terminal;
 recorded in the ConfigMap `rhoai-3day-field-workshop-installed-csvs` in `openshift-gitops` just
 before), then the namespaces it created. If it stops
-part way, run it again: each step is safe to repeat. It leaves behind the operators OLM installed
-as dependencies (Authorino, Limitador and the DNS operator for RHCL; DevWorkspace for the Web
-Terminal) and all CRDs. List what remains:
+part way, run it again: each step is safe to repeat. It also removes the dependency operators OLM
+installed together with them (for RHCL on a fresh cluster: Authorino, Limitador and the DNS operator;
+for the Web Terminal: DevWorkspace), recognised by package, OLM's generated Subscription name and a
+creation time within three minutes after the lab's Subscription; a dependency that already existed,
+such as a standalone Authorino, stays, and so does any other operator installed meanwhile. A dependency left
+behind auto-upgrades and can make the next bootstrap unresolvable (`ResolutionFailed`). CRDs stay.
+List what remains:
 
 [source,bash]
 ----

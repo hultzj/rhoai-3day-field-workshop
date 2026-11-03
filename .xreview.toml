@@ -7,6 +7,7 @@ checks = [
   { name = "check-lab", cmd = "bash scripts/check-lab.sh" },
   { name = "shell",     cmd = "for f in automation/*.sh automation/tests/*.sh scripts/*.sh; do bash -n $f || exit 1; done" },
   { name = "selftest",  cmd = "bash automation/tests/selftest.sh" },
+  { name = "recorder",  cmd = "cd scripts/videos && node test.mjs" },
 ]
 # Leave `checks` unset to auto-detect from package.json / pyproject.toml /
 # Makefile / Cargo.toml / go.mod. Set it to pin exact commands:

@@ -86,6 +86,9 @@ does and does not imply about support.
 
 == Exercise 1: Let the cluster recognise the GPU
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m2-ex1.mp4[width=100%]
+
 Node Feature Discovery is installed, but it only scans nodes once you create its instance. The
 `NodeFeatureDiscovery` CR starts a worker on every node that reads the PCI bus and labels the node
 with the device classes and vendors it finds. NVIDIA's PCI vendor ID is `10de`.
@@ -139,6 +142,9 @@ cluster now knows which node has an NVIDIA device; every later NVIDIA component 
 by this label.
 
 == Exercise 2: Load the NVIDIA driver
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m2-ex2.mp4[width=100%]
 
 The `NVIDIADriver` CR tells the GPU Operator which driver image to run and on which nodes. The
 operator ships a pinned driver image; the CR below uses its digest and selects nodes by the NFD
@@ -211,6 +217,9 @@ In short: the driver makes the GPU work on the node; it does not make it schedul
 
 == Exercise 3: Turn on the DRA driver
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m2-ex3.mp4[width=100%]
+
 [source,yaml]
 ----
 apiVersion: nvidia.com/v1alpha1
@@ -262,6 +271,9 @@ next to the driver pod, all `Running`. There is no device plugin pod: this stack
 
 == Exercise 4: Read what DRA publishes
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m2-ex4.mp4[width=100%]
+
 [source,bash,role="execute"]
 ----
 oc get deviceclass
@@ -279,6 +291,9 @@ exists.
 In short: a DeviceClass is a selector over the attributes a driver publishes in ResourceSlices.
 
 == Exercise 5: Claim the GPU by its properties
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m2-ex5.mp4[width=100%]
 
 Create a project for the GPU tests, a `ResourceClaimTemplate` that asks for one device of class
 `gpu.nvidia.com` whose product name is `NVIDIA L4`, and a pod that uses it.
@@ -365,6 +380,9 @@ reserved for `smi-a`; `smi-b-gpu-…` has no device. The scheduler allocated the
 before placing it.
 
 == Exercise 6: Two negative controls
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m2-ex6.mp4[width=100%]
 
 The second pod asked for its own GPU, but the cluster has only one, and the first pod holds it.
 
@@ -462,6 +480,9 @@ oc delete pod smi-h100 -n {gpu_namespace} --wait=true
 Expected result: `pod "smi-h100" deleted`.
 
 == Exercise 7: Share one GPU between two pods
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m2-ex7.mp4[width=100%]
 
 A `ResourceClaim` created on its own (not from a template) is a single allocation. Every pod that
 names it gets the _same_ device.

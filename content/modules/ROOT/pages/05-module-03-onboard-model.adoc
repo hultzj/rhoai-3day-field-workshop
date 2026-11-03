@@ -72,6 +72,9 @@ xref:91-reference.adoc[Technical Reference] lists what that implies.
 
 == Exercise 1: Find the model in the catalog
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m3-ex1.mp4[width=100%]
+
 . Open the OpenShift AI dashboard: in the OpenShift console, click the *Application launcher* (the
   grid icon in the top bar) and, under *OpenShift Self Managed Services*, choose *Red Hat OpenShift
   AI*. Log in again with the same identity provider if asked. Close the welcome tour if it opens.
@@ -105,6 +108,9 @@ Expected result: one model, `redhat_ai_validated_models  RedHatAI/granite-4.0-h-
 KServe will pull.
 
 == Exercise 2: Create a model registry
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m3-ex2.mp4[width=100%]
 
 The catalog is Red Hat's list. The registry is _yours_: it records what your organisation decided
 to use. OpenShift AI's model registry operator deploys a registry from one CR.
@@ -157,6 +163,9 @@ the registry URL `https://{registry_name}-rest.{cluster_domain}/api/model_regist
 
 == Exercise 3: Record the model, its version and its artifact
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m3-ex3.mp4[width=100%]
+
 First the negative control: the registry must refuse an anonymous caller.
 
 [source,bash,role="execute"]
@@ -195,6 +204,9 @@ GUI view: in the OpenShift AI dashboard, *AI hub* → *Models* → *Registry* ta
 *Deployments* `-` (nothing deployed yet).
 
 == Exercise 4: Prepare the serving project
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m3-ex4.mp4[width=100%]
 
 Create a data science project for models and a GPU claim template in it, then write the
 `ServingRuntime`: the container KServe will run for every InferenceService that names it. The
@@ -290,6 +302,9 @@ lines are identical: the runtime you wrote runs exactly the vLLM build the dashb
 
 == Exercise 5: Serve the model on the claimed GPU
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m3-ex5.mp4[width=100%]
+
 [source,yaml,subs="attributes+"]
 ----
 kind: InferenceService
@@ -365,6 +380,9 @@ the same DRA mechanism as the test pods.
 
 == Exercise 6: Record the deployment in the registry
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m3-ex6.mp4[width=100%]
+
 The registry does not watch the cluster. It knows about a deployment only when someone records it,
 which the dashboard does when you click *Deploy model* from a registered version. The registry's
 model is simple: a *serving environment* (here, your project) holds *inference services*, each
@@ -391,6 +409,9 @@ GUI view: refresh *AI hub* → *Models* → *Registry*: the *Deployments* column
 image::05-registry-deployment.png[The field-registry model list showing granite-4.0-h-tiny-fp8, version 3.0, 1 deployment]
 
 == Exercise 7: Prove who can call the model
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m3-ex7.mp4[width=100%]
 
 Three callers: nobody, a ServiceAccount with no rights, and you.
 
@@ -424,6 +445,9 @@ Expected result: `"finish": "tool_calls"` and one tool call to `get_weather` wit
 answer; it asked the caller to run a tool. That is the building block of the Day 3 agent.
 
 == Exercise 8: Read what vLLM did with the GPU
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m3-ex8.mp4[width=100%]
 
 vLLM reports how it split the GPU's memory at startup.
 

@@ -1,0 +1,82 @@
+===== block 1 (line 10) =====
+NAME         DISPLAY NAME   STATUS
+ws-gpu-lab                  Active
+ws-models                   Active
+NAME             AVAILABLE   AGE
+field-registry   True        3h58m
+NAME                                STATUS   AGE
+gpucluster.nvidia.com/gpu-cluster   ready    4h13m
+
+NAME                                 STATUS   DEFAULT   AGE
+nvidiadriver.nvidia.com/gpu-driver   ready    false     2026-11-03T07:20:52Z
+NAME           AGE
+nfd-instance   4h16m
+===== block 2 (line 24) =====
+NAME       DISPLAY NAME   STATUS
+ws-agent                  Active
+ws-eval                   Active
+ws-guard                  Active
+NAME     AVAILABLE   PROGRESSING   VERSION
+mlflow   True        False         3.14.0
+NAME                    POD-SELECTOR                                                        AGE
+granite4-tiny-ingress   app.kubernetes.io/name=granite4-tiny,kserve.io/component=workload   2m2s
+===== block 3 (line 35) =====
+project.project.openshift.io "ws-agent" deleted
+project.project.openshift.io "ws-eval" deleted
+project.project.openshift.io "ws-guard" deleted
+networkpolicy.networking.k8s.io "granite4-tiny-ingress" deleted
+mlflow.mlflow.opendatahub.io "mlflow" deleted
+datasciencecluster.datasciencecluster.opendatahub.io/default-dsc patched
+===== block 4 (line 53) =====
+NAME            PHASE   ENDPOINT                                            HTTPROUTE                    GATEWAY                AGE
+granite4-tiny   Ready   https://maas.apps.ocp-ai.sandbox3022.opentlc.com/   granite4-tiny-kserve-route   maas-default-gateway   3h36m
+NAME                                                  PHASE    PRIORITY   AGE
+maassubscription.maas.opendatahub.io/granite-bronze   Active   0          3h36m
+maassubscription.maas.opendatahub.io/granite-gold     Active   0          3h36m
+
+NAME                                                PHASE    AGE
+maasauthpolicy.maas.opendatahub.io/granite-access   Active   3h36m
+NAME                     CLASS                        ADDRESS                                                                                 PROGRAMMED   AGE
+maas-default-gateway     data-science-gateway-class   <elb-hostname>                  True         3h42m
+openshift-ai-inference   data-science-gateway-class   openshift-ai-inference-data-science-gateway-class.openshift-ingress.svc.cluster.local   True         3h51m
+NAME       MTLS AUTHORINO   MTLS LIMITADOR   AGE
+kuadrant   false            false            3h43m
+NAME       READY   UP-TO-DATE   AVAILABLE   AGE
+postgres   1/1     1            1           3h44m
+aigateway: Managed
+===== block 5 (line 66) =====
+job.batch "maas-client" deleted
+maasmodelref.maas.opendatahub.io "granite4-tiny" deleted
+maassubscription.maas.opendatahub.io "granite-gold" deleted
+maassubscription.maas.opendatahub.io "granite-bronze" deleted
+maasauthpolicy.maas.opendatahub.io "granite-access" deleted
+llminferenceservice.serving.kserve.io "granite4-tiny" deleted
+maastenantconfig.maas.opendatahub.io "default-tenant" deleted
+aitenant.maas.opendatahub.io "models-as-a-service" deleted
+datasciencecluster.datasciencecluster.opendatahub.io/default-dsc patched
+namespace "models-as-a-service" deleted
+namespace "redhat-ai-gateway-infra" deleted
+resourceclaim.resource.k8s.io "shared-l4" deleted
+odhdashboardconfig.opendatahub.io/odh-dashboard-config patched
+gateway.gateway.networking.k8s.io "maas-default-gateway" deleted
+gateway.gateway.networking.k8s.io "openshift-ai-inference" deleted
+route.route.openshift.io "openshift-ai-inference" deleted
+configmap "openshift-ai-inference-config" deleted
+kuadrant.kuadrant.io "kuadrant" deleted
+namespace "kuadrant-system" deleted
+deployment.apps "postgres" deleted
+service "postgres" deleted
+persistentvolumeclaim "postgres-data" deleted
+secret "postgres-creds" deleted
+secret "maas-db-config" deleted
+NAME                   CLASS                        ADDRESS                                                                               PROGRAMMED   AGE
+data-science-gateway   data-science-gateway-class   data-science-gateway-data-science-gateway-class.openshift-ingress.svc.cluster.local   True         29d
+===== block 6 (line 105) =====
+project.project.openshift.io "ws-models" deleted
+project.project.openshift.io "ws-gpu-lab" deleted
+modelregistry.modelregistry.opendatahub.io "field-registry" deleted
+gpucluster.nvidia.com "gpu-cluster" deleted
+nvidiadriver.nvidia.com "gpu-driver" deleted
+nodefeaturediscovery.nfd.openshift.io "nfd-instance" deleted
+no NVIDIA device classes
+

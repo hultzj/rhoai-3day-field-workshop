@@ -58,6 +58,9 @@ different identities, governed by two different systems.
 
 == Exercise 1: Enable MLflow
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m7-ex1.mp4[width=100%]
+
 [source,bash,role="execute"]
 ----
 oc patch datasciencecluster default-dsc --type merge \
@@ -90,6 +93,9 @@ https://mlflow.redhat-ods-applications.svc:8443/mlflow`.
 
 == Exercise 2: How MLflow decides who sees what
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m7-ex2.mp4[width=100%]
+
 Ask the tracking API three ways: with no token, with your token but no workspace, and with both.
 
 [source,bash,role="execute",subs="attributes+"]
@@ -110,6 +116,9 @@ with the workspace `ws-agent`, `{}`: an empty workspace, which belongs to the pr
 In short: an MLflow workspace is an OpenShift project, and MLflow asks Kubernetes who may use it.
 
 == Exercise 3: An agent without MLflow rights (negative control)
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m7-ex3.mp4[width=100%]
 
 The agent consumes MaaS with your gold key from Day 2. Check that it still works, and mint a new one
 if it expired or your terminal lost it (the Web Terminal's home directory does not survive a restart):
@@ -215,18 +224,23 @@ spec:
       - {name: ingress-ca, configMap: {name: ingress-ca}}
 EOF
 until [ -n "$(oc get job weather-agent -n ws-agent -o jsonpath='{.status.succeeded}{.status.failed}')" ]; do sleep 5; done
-oc logs job/weather-agent -n ws-agent | grep -E 'ANSWER|TRACE|SPAN|TOKENS|PERMISSION_DENIED|403|ERROR:' | cut -c1-200
+oc logs job/weather-agent -n ws-agent | grep -o -E 'ANSWER:.*|TRACE .*|  SPAN .*|TOKENS .*|PERMISSION_DENIED|ERROR: .*' | cut -c1-200
 [ "$(oc get job weather-agent -n ws-agent -o jsonpath='{.status.succeeded}')" = 1 ] && echo "job: succeeded" || { echo "job: failed"; return 1; }
 }
+# on a re-run after Exercise 4, remove its RoleBinding so that this stays the negative control
+oc delete rolebinding weather-agent-mlflow -n ws-agent --ignore-not-found
 run_agent
 ----
 
-Expected result: the job fails, and the log shows `mlflow.exceptions.RestException: … {'error':
-{'code': 'PERMISSION_DENIED', 'message': 'Permission denied for requested operation.'}}` when it
-tries to create the experiment: the agent's ServiceAccount
+Expected result: the job fails: the log line `PERMISSION_DENIED` comes from MLflow's answer
+(`RestException … {'error': {'code': 'PERMISSION_DENIED', …}}`) when the agent tries to create the
+experiment, followed by `job: failed`: the agent's ServiceAccount
 may call MaaS (it holds a key) but has no right to write to the `ws-agent` workspace.
 
 == Exercise 4: Grant exactly the rights to trace, and run again
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m7-ex4.mp4[width=100%]
 
 OpenShift AI ships ClusterRoles for MLflow: `mlflow-operator-mlflow-view`, `-edit` and
 `-integration` (for applications that log experiments and traces). Bind the integration role in this
@@ -261,11 +275,17 @@ In short: the trace shows the agent's reasoning loop as data: ask, call a tool, 
 
 == Exercise 5: Read the trace back, from the API and in the dashboard
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m7-ex5.mp4[width=100%]
+
 The job printed the trace from its own process. Read it back from MLflow as another client would,
 through the same REST API the MLflow UI uses, in the `ws-agent` workspace:
 
 [source,bash,role="execute"]
 ----
+oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+export CURL_CA_BUNDLE=~/ingress-ca.crt
+ML=https://rh-ai.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')/mlflow
 H=(-H "Authorization: Bearer $(oc whoami -t)" -H 'X-MLFLOW-WORKSPACE: ws-agent')
 EXP=$(curl -s "${H[@]}" "$ML/api/2.0/mlflow/experiments/get-by-name?experiment_name=weather-agent" | jq -r .experiment.experiment_id)
 curl -s "${H[@]}" "$ML/api/2.0/mlflow/traces?experiment_ids=$EXP&max_results=5" \

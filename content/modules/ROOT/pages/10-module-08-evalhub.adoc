@@ -43,6 +43,9 @@ key belongs to, like any other consumer's.
 
 == Exercise 1: Deploy EvalHub
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m8-ex1.mp4[width=100%]
+
 [source,yaml]
 ----
 kind: EvalHub
@@ -80,6 +83,9 @@ evaluation jobs run as).
 
 == Exercise 2: What can it run?
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m8-ex2.mp4[width=100%]
+
 [source,bash,role="execute"]
 ----
 oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
@@ -98,11 +104,24 @@ questions testing basic reasoning and scientific knowledge (AI2 Reasoning Challe
 
 == Exercise 3: Evaluate the MaaS model
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m8-ex3.mp4[width=100%]
+
 The job's credentials live in a Secret: the gold API key, and the CA that signs the MaaS gateway's
-certificate.
+certificate. The block first checks that your gold key from Day 2 still works and mints a new one
+if it expired or your terminal lost it (the Web Terminal's home directory does not survive a restart).
 
 [source,bash,role="execute",subs="attributes+"]
 ----
+MAAS=https://maas.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
+code=$(curl -s -o /dev/null -w '%\{http_code}' -H "Authorization: Bearer $(cat ~/key-gold 2>/dev/null)" "$MAAS/maas-api/v1/models")
+if [ "$code" != 200 ]; then  # expired, or lost with a terminal restart: mint a new one as in Module 7
+  echo "gold key not usable (HTTP $code): minting a new one"
+  resp=$(curl -s -X POST "$MAAS/maas-api/v1/api-keys" -H "Authorization: Bearer $(oc whoami -t)" -H 'Content-Type: application/json' \
+    -d '{"name":"workshop-gold-m8","expiresIn":"72h","subscription":"granite-gold"}')
+  key=$(jq -r '.key // empty' <<<"$resp")
+  case "$key" in sk-oai-*) printf '%s' "$key" > ~/key-gold ;; *) echo "minting failed: $resp" ;; esac
+fi
 oc create secret generic maas-model -n ws-eval --from-literal=api-key="$(cat ~/key-gold)" \
   --from-file=ca_cert=$HOME/ingress-ca.crt --dry-run=client -o yaml | oc apply -f -
 MAAS_URL=https://maas.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')/{model_namespace}/{model_name}/v1
@@ -137,7 +156,8 @@ oc get jobs -n ws-eval
 await "$JOB"
 ----
 
-Expected result: the gold subscription's token count so far, a job ID, a Kubernetes Job in `ws-eval` (`Running`), and after about two minutes
+Expected result: `gold key not usable … minting a new one` only if your Day 2 key was unusable; then
+the gold subscription's token count so far, a job ID, a Kubernetes Job in `ws-eval` (`Running`), and after about two minutes
 `"state": "completed"`, `"error": null`, metrics `"acc": 0.56`, `"acc_norm": 0.56`,
 `"acc_stderr": 0.0709…`, and a `test` block `{"score": 0.56, "threshold": 0.5, "pass": true}`.
 
@@ -148,6 +168,9 @@ from about 0.42 to 0.70. The same benchmark against the internal endpoint on the
 threshold of 0.5; it is a gate you would set for your use case, not a quality certificate.
 
 == Exercise 4: A wrong key (negative control)
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m8-ex4.mp4[width=100%]
 
 [source,bash,role="execute"]
 ----
@@ -162,6 +185,9 @@ MaaS refuses a key it does not know with 403 (a request with no key at all gets 
 fails loudly instead of reporting a score.
 
 == Exercise 5: The evaluation is a MaaS consumer too
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m8-ex5.mp4[width=100%]
 
 Compare the gold subscription's tokens with the count taken just before the evaluation. Prometheus
 scrapes every 30 seconds or so, so the loop waits for the new value:

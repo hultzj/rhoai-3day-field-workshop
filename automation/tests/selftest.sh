@@ -35,36 +35,61 @@ oc() { return 1; }; export -f oc
 guard && fail "guard accepted when oc failed"
 unset -f oc
 
-# teardown-csvs.sh, with oc stubbed (cluster state in files): record keeps only CSVs installed by this
-# lab's Subscriptions; delete removes exactly those; a failed delete keeps the record so a rerun finishes.
+# teardown-csvs.sh, with oc stubbed (cluster state in files): record keeps the CSVs of this lab's
+# Subscriptions and of the dependency Subscriptions OLM generated for them (and those Subscriptions),
+# never a pre-existing or unrelated one; delete removes exactly those; a failed delete keeps the record.
 st=$(mktemp -d); export ST=$st
 oc() {
   local a="$*"
   case "$a" in
-    "get subscriptions.operators.coreos.com -A -l app.kubernetes.io/part-of=lab "*) cat "$ST/subs" ;;
+    "get subscriptions.operators.coreos.com -A -o json") cat "$ST/subs.json" ;;
     "get configmap lab-installed-csvs "*) [[ -e $ST/cm ]] && cat "$ST/cm"; return 0 ;;
     "create configmap lab-installed-csvs "*) a=${a#*--from-literal=csvs=}; printf '%s' "${a% --dry-run*}" >"$ST/cm.new" ;;
     "apply -f -") cat >/dev/null; mv "$ST/cm.new" "$ST/cm" ;;
+    "delete subscriptions.operators.coreos.com "*) echo "sub:$5/$3" >>"$ST/deleted" ;;
     "delete csv "*) echo "$3/$5" >>"$ST/attempts"; [[ -e $ST/fail-once ]] && { rm "$ST/fail-once"; return 1; }
                     echo "$3/$5" >>"$ST/deleted" ;;
     "delete configmap lab-installed-csvs "*) rm -f "$ST/cm" ;;
   esac
 }; export -f oc
-# The label selector returns only this lab's Subscriptions; a foreign web-terminal Subscription elsewhere
-# is never listed, so its CSV can never be recorded.
-printf 'openshift-operators web-terminal.v1\nopenshift-nfd nfd.v1\nopenshift-auth-operator \n' >"$st/subs"
+cat >"$st/subs.json" <<'JSON'
+{"items":[
+ {"metadata":{"namespace":"openshift-operators","name":"web-terminal","creationTimestamp":"2026-11-02T11:00:19Z","labels":{"app.kubernetes.io/part-of":"lab"}},
+  "spec":{"name":"web-terminal","channel":"fast","source":"redhat-operators","sourceNamespace":"openshift-marketplace"},"status":{"installedCSV":"web-terminal.v1"}},
+ {"metadata":{"namespace":"openshift-auth-operator","name":"rhcl-operator","creationTimestamp":"2026-11-02T11:00:18Z","labels":{"app.kubernetes.io/part-of":"lab"}},
+  "spec":{"name":"rhcl-operator","channel":"stable-1.4","source":"rh","sourceNamespace":"openshift-marketplace"},"status":{"installedCSV":"rhcl-operator.v1"}},
+ {"metadata":{"namespace":"openshift-auth-operator","name":"dns-operator-stable-rh-openshift-marketplace","creationTimestamp":"2026-11-02T11:00:33Z"},
+  "spec":{"name":"dns-operator","channel":"stable","source":"rh","sourceNamespace":"openshift-marketplace"},"status":{"installedCSV":"dns-operator.v1"}},
+ {"metadata":{"namespace":"openshift-auth-operator","name":"authorino-operator","creationTimestamp":"2026-09-18T03:35:23Z"},
+  "spec":{"name":"authorino-operator","channel":"stable","source":"redhat-operators","sourceNamespace":"openshift-marketplace"},"status":{"installedCSV":"authorino-operator.v1"}},
+ {"metadata":{"namespace":"openshift-auth-operator","name":"other-stable-rh-openshift-marketplace","creationTimestamp":"2026-11-02T11:00:34Z"},
+  "spec":{"name":"other","channel":"stable","source":"rh","sourceNamespace":"openshift-marketplace"},"status":{"installedCSV":"other.v1"}},
+ {"metadata":{"namespace":"openshift-operators","name":"dns-operator-stable-rh-openshift-marketplace","creationTimestamp":"2026-11-02T11:00:33Z"},
+  "spec":{"name":"dns-operator","channel":"stable","source":"rh","sourceNamespace":"openshift-marketplace"},"status":{"installedCSV":"unrelated-dns.v1"}},
+ {"metadata":{"namespace":"openshift-operators","name":"devworkspace-operator-fast-redhat-operators-openshift-marketplace","creationTimestamp":"2026-11-02T11:00:19Z"},
+  "spec":{"name":"devworkspace-operator","channel":"fast","source":"redhat-operators","sourceNamespace":"openshift-marketplace"},"status":{"installedCSV":"devworkspace-operator.v0"}},
+ {"metadata":{"namespace":"openshift-auth-operator","name":"limitador-operator-stable-rh-openshift-marketplace","creationTimestamp":"2026-11-02T11:00:17Z"},
+  "spec":{"name":"limitador-operator","channel":"stable","source":"rh","sourceNamespace":"openshift-marketplace"},"status":{"installedCSV":"limitador-operator.v0"}}
+]}
+JSON
 bash automation/teardown-csvs.sh record lab || fail "record failed"
-[ "$(cat "$st/cm")" = "$(printf 'openshift-nfd nfd.v1\nopenshift-operators web-terminal.v1')" ] ||
-  fail "record saved '$(cat "$st/cm")'"
-: >"$st/subs"   # the Applications are gone: no Subscriptions left
+want=$(printf '%s\n' "openshift-auth-operator dns-operator.v1" "openshift-auth-operator rhcl-operator.v1" "openshift-operators web-terminal.v1" "sub openshift-auth-operator dns-operator-stable-rh-openshift-marketplace" | sort)
+[ "$(cat "$st/cm")" = "$want" ] || fail "record saved '$(tr '\n' ';' <"$st/cm")'"
+echo '{"items":[]}' >"$st/subs.json"   # the Applications are gone: no lab Subscriptions left
 touch "$st/fail-once"
 bash automation/teardown-csvs.sh record lab || fail "second record failed"
 bash automation/teardown-csvs.sh delete lab >/dev/null 2>&1 && fail "delete reported success although a delete failed"
 [ -e "$st/cm" ] || fail "the record was dropped although a delete failed"
 bash automation/teardown-csvs.sh delete lab >/dev/null 2>&1 || fail "rerun of delete failed"
 [ -e "$st/cm" ] && fail "the record survived a fully successful delete"
-[ "$(sort -u "$st/deleted" | tr '\n' ' ')" = "nfd.v1/openshift-nfd web-terminal.v1/openshift-operators " ] ||
-  fail "deleted '$(sort -u "$st/deleted" | tr '\n' ' ')'"
+got=$(sort -u "$st/deleted" | tr '\n' ' ')
+[ "$got" = "dns-operator.v1/openshift-auth-operator rhcl-operator.v1/openshift-auth-operator sub:openshift-auth-operator/dns-operator-stable-rh-openshift-marketplace web-terminal.v1/openshift-operators " ] ||
+  fail "deleted '$got'"
+# authorino: pre-existing; other: unrelated package installed in the same window; limitador: generated
+# name and a dependency package, but created before the lab's Subscription, so not caused by it;
+# devworkspace: the same, created in the same second as the lab's Subscription; unrelated-dns: a
+# dependency package, but not one of web-terminal's (the lab Subscription in its namespace)
+grep -q -E 'authorino|other|limitador|devworkspace|unrelated-dns|openshift-operators/dns' "$st/deleted" && fail "deleted a pre-existing or unrelated operator"
 unset -f oc; rm -rf "$st"
 
 # If recording ownership fails, make teardown must stop before deleting anything.

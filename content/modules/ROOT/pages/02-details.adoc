@@ -36,6 +36,19 @@ navigation, and the user menu (top right) shows your name, for example `Kuro Adm
 The command-line pre-flight is the first exercise of
 xref:03-module-01-your-cluster.adoc[Module 1], run in the Web Terminal.
 
+== How the exercises build on each other
+
+Run each module in one Web Terminal session, top to bottom. Later exercises use shell variables and
+helper functions that earlier exercises of the same module define (for example the registry URL in
+Module 3, or the `check` helper in Module 9), and files they save in your terminal's home directory
+(the cluster CA in `~/ingress-ca.crt`, the MaaS keys in `~/key-gold` and `~/key-bronze`).
+
+If the Web Terminal restarts (it stops after a period of inactivity, and closing the browser tab can
+end the session), re-run the current module's blocks from its first exercise. Every block is safe to
+run again; where an earlier exercise deliberately breaks and repairs something (Module 5's
+Authorino TLS, Module 9's judge), the re-run shows the repaired state instead of the failure. Day 3
+starts by checking your MaaS key and minting a new one if it is gone.
+
 == Why there is no terminal in this guide
 
 The Showroom page you are reading has no login. A terminal embedded here would run with the rights

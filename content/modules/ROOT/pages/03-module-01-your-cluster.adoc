@@ -48,6 +48,9 @@ would hand your cluster-admin rights to anyone with the URL.
 
 == Exercise 1: Open the Web Terminal and check who you are
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m1-ex1.mp4[width=100%]
+
 . In the OpenShift console, click the *Command line terminal* icon (*>_*) in the top bar. In a
   narrow browser window the top bar folds it into the *Utility menu* (*⋮*).
 . The *OpenShift command line terminal* panel opens at the bottom with *Initialize terminal*.
@@ -55,6 +58,10 @@ would hand your cluster-admin rights to anyone with the URL.
 . Wait until the panel shows `Welcome to the OpenShift Web Terminal` and a `bash` prompt.
 
 image::03-web-terminal-start.png[The Initialize terminal panel with Project openshift-terminal and the Start button]
+
+TIP: For more room, open the same terminal full page in a new browser tab:
+link:https://console-openshift-console.{cluster_domain}/terminal[console-openshift-console.{cluster_domain}/terminal^].
+The step videos use that view.
 
 Then run:
 
@@ -74,6 +81,9 @@ cluster.
 
 == Exercise 2: Find the GPU node
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m1-ex2.mp4[width=100%]
+
 The GPU node was added with a taint, `nvidia.com/gpu`, which keeps ordinary pods off the expensive
 node: only pods that tolerate the taint are scheduled there. Find it by that taint:
 
@@ -87,6 +97,9 @@ Expected result: the header and exactly one node, instance type `g6.2xlarge` (8 
 NVIDIA L4 GPU), with taint `nvidia.com/gpu`.
 
 == Exercise 3: Show that the GPU is not usable yet (negative control)
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m1-ex3.mp4[width=100%]
 
 A GPU becomes usable when three things exist: something that recognises the hardware on the node,
 a kernel driver, and a way for the scheduler to see and hand out the device. Check all three:
@@ -107,6 +120,9 @@ hardware is present, but the cluster neither knows it is a GPU nor can schedule 
 Module 2 adds the missing layers.
 
 == Exercise 4: Take an inventory of operators and OpenShift AI
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m1-ex4.mp4[width=100%]
 
 [source,bash,role="execute"]
 ----

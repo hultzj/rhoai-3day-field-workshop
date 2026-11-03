@@ -46,6 +46,9 @@ the `MaaSModelRef` lives in the model's project and points at the model.
 
 == Exercise 1: Move the model to the MaaS gateway
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m6-ex1.mp4[width=100%]
+
 The `LLMInferenceService` must attach to `{maas_gateway}`, and vLLM must always report token usage
 (`--enable-force-include-usage`), which Limitador counts. Changing the pod spec would roll the
 Deployment and briefly need a third vLLM on the GPU, so recreate it instead:
@@ -93,6 +96,9 @@ Expected result: after a few minutes, `condition met`, and the URL is now
 `https://maas.{cluster_domain}/{model_namespace}/{model_name}`.
 
 == Exercise 2: Publish the model with two tiers
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m6-ex2.mp4[width=100%]
 
 [source,yaml,subs="attributes+"]
 ----
@@ -186,6 +192,9 @@ image::08-maas-governance.png[The MaaS governance page listing the granite-bronz
 
 == Exercise 3: Mint keys and call the model
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m6-ex3.mp4[width=100%]
+
 [source,bash,role="execute",subs="attributes+"]
 ----
 oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
@@ -219,6 +228,9 @@ block to mint new keys if `~/key-gold` is gone.
 
 == Exercise 4: Tiers are real (429)
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m6-ex4.mp4[width=100%]
+
 Send the same burst of twelve requests with each key:
 
 [source,bash,role="execute",subs="attributes+"]
@@ -237,6 +249,9 @@ about 300 tokens, then the window's budget is gone), and `gold:` twelve `200`s. 
 gateway, different contract. Wait a minute and bronze is served again.
 
 == Exercise 5: Read usage per subscription
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m6-ex5.mp4[width=100%]
 
 Query the cluster's Prometheus (Thanos querier) for the counters Limitador exports:
 
@@ -260,6 +275,9 @@ GUI view: in the OpenShift console, *Observe* → *Metrics*, type `sum by (subsc
 image::08-observe-metrics.png[The Metrics page showing authorized_hits summed by subscription for granite-bronze and granite-gold]
 
 == Exercise 6: Consume it from an application
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m6-ex6.mp4[width=100%]
 
 An application needs only three things: the base URL, the model name and a key, plus trust in the
 gateway's certificate. This job runs the OpenAI Python SDK against MaaS with the gold key, mounted

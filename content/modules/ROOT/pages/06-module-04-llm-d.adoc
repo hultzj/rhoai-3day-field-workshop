@@ -71,6 +71,9 @@ give each replica its own GPU or MIG slice.
 
 == Exercise 1: Free the GPU
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m4-ex1.mp4[width=100%]
+
 Day 1's InferenceService holds the GPU through an exclusive claim. Two new replicas cannot start
 while it does. Delete it and watch the claim go:
 
@@ -88,6 +91,9 @@ prints `No resources found in {model_namespace} namespace.` (or, if you are repe
 only `shared-l4`): the claim created from the template went with its pod, so the GPU is free.
 
 == Exercise 2: Deploy two replicas behind the scheduler
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m4-ex2.mp4[width=100%]
 
 [source,yaml,subs="attributes+"]
 ----
@@ -168,6 +174,9 @@ openshift-ingress/{inference_gateway}`. The workload is already starting; only t
 nowhere to attach.
 
 == Exercise 3: Create the inference gateway
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m4-ex3.mp4[width=100%]
 
 The gateway follows the same pattern as OpenShift AI's own dashboard gateway: a ClusterIP Service
 whose certificate comes from the service CA, exposed through an OpenShift Route.
@@ -253,6 +262,9 @@ In short: you wrote one resource; KServe generated the pool, the scheduler and t
 
 == Exercise 4: Read the scheduler's configuration
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m4-ex4.mp4[width=100%]
+
 The EPP receives its whole configuration as an argument. Read the scorers and their weights:
 
 [source,bash,role="execute",subs="attributes+"]
@@ -267,6 +279,9 @@ weight 2, and the `max-score-picker`. Prefix affinity carries the most weight, b
 a full KV cache can outvote it.
 
 == Exercise 5: An open door (negative control)
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m4-ex5.mp4[width=100%]
 
 KServe also created an AuthPolicy (a Red Hat Connectivity Link object) that should require an
 OpenShift token on this gateway. Try the endpoint without one, then read the policy's status:
@@ -286,6 +301,9 @@ Expected result: `anonymous: 200`: anyone can call the model. The AuthPolicy is
 object is only a request; Module 5 installs the Kuadrant instance that enforces it.
 
 == Exercise 6: Watch the scheduler route by prefix
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m4-ex6.mp4[width=100%]
 
 Send two families of requests, each with its own long system prompt (about 1,500 tokens), five
 times each, and compare each replica's vLLM counters before and after.
@@ -320,6 +338,9 @@ replica and sent the new family to the other.
 In short: llm-d turns a pool of servers into one cache-aware service.
 
 == Exercise 7: Lose a replica (break and restore)
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m4-ex7.mp4[width=100%]
 
 Delete one replica while sending requests, then watch it come back:
 

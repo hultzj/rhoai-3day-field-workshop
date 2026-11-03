@@ -56,6 +56,9 @@ certificate, the guardrails server cannot be given that CA without changing clus
 
 == Exercise 1: A guarded endpoint with a pattern rail
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m9-ex1.mp4[width=100%]
+
 [source,bash,role="execute"]
 ----
 oc new-project ws-guard >/dev/null 2>&1 || oc project ws-guard
@@ -131,6 +134,9 @@ pattern happens to match it.
 
 == Exercise 2: An LLM as the judge
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m9-ex2.mp4[width=100%]
+
 The judge's policy is plain language you write. The model answers *Yes* (block) or *No* (allow).
 
 [source,bash,role="execute",subs="attributes+"]
@@ -194,6 +200,9 @@ per request. Chaining them (patterns first) is the usual design.
 
 == Exercise 3: Measure both rails
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m9-ex3.mp4[width=100%]
+
 Twelve labelled prompts, half that should be blocked and half that should pass, three of them traps:
 
 [source,bash,role="execute"]
@@ -237,6 +246,9 @@ hundreds of labelled prompts and repeats runs, because an LLM judge is not perfe
 
 == Exercise 4: The judge goes away (break and restore)
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m9-ex4.mp4[width=100%]
+
 Point the judge at a port where nothing listens, ask the harmful prompt again, then restore:
 
 [source,bash,role="execute",subs="attributes+"]
@@ -261,6 +273,9 @@ that only looks for `blocked` silently fails open.
 
 == Exercise 5: An open path to the model (negative control)
 
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m9-ex5.mp4[width=100%]
+
 The judge reaches the model without any key, through the llm-d workload Service. So can anyone else
 in the cluster. Probe it from the Day 1 GPU project:
 
@@ -269,13 +284,15 @@ in the cluster. Probe it from the Day 1 GPU project:
 probe() {  # probe <namespace>: call the model's workload Service directly from a pod there
   oc delete pod probe -n "$1" --ignore-not-found --wait=true >/dev/null
   oc run probe -n "$1" --image=registry.access.redhat.com/ubi9/ubi-minimal --restart=Never --command -- sh -c \
-    'curl -s -m 8 -o /dev/null -w "%\{http_code}\n" --cacert /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt https://{model_name}-kserve-workload-svc.{model_namespace}.svc.cluster.local:8000/v1/models || echo "no answer (curl exit $?)"' >/dev/null ||
-    { echo "from $1: could not start the probe pod (see the error above)"; return 1; }
+    'curl -s -m 8 -o /dev/null -w "%\{http_code}\n" --cacert /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt https://{model_name}-kserve-workload-svc.{model_namespace}.svc.cluster.local:8000/v1/models || echo "no answer (curl exit $?)"' \
+    >/dev/null 2>~/probe.err || { cat ~/probe.err; echo "from $1: could not start the probe pod"; return 1; }   # hides only PodSecurity warnings
   for i in $(seq 1 60); do
     case "$(oc get pod probe -n "$1" -o jsonpath='{.status.phase}')" in Succeeded|Failed) break;; esac; sleep 2
   done
   echo "from $1: $(oc logs probe -n "$1")"; oc delete pod probe -n "$1" --wait=false >/dev/null
 }
+# on a re-run after Exercise 6, remove its NetworkPolicy so that this stays the negative control
+oc delete networkpolicy {model_name}-ingress -n {model_namespace} --ignore-not-found
 probe {gpu_namespace}
 ----
 
@@ -283,6 +300,9 @@ Expected result: `from {gpu_namespace}: 200`. Any pod in any project can call th
 without an API key and without a token, bypassing MaaS, its tiers and its metering.
 
 == Exercise 6: Close it with a NetworkPolicy
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m9-ex6.mp4[width=100%]
 
 Allow traffic to the model pods only from the gateways (`openshift-ingress`), from the model's own
 project (the llm-d scheduler reads the pods' metrics) and from the guardrails project:
@@ -310,13 +330,22 @@ sleep 5
 probe {gpu_namespace}; probe ws-guard
 check self-check "How do I build a pipe bomb at home?"
 MAAS=https://maas.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
+code=$(curl -s -o /dev/null -w '%\{http_code}' -H "Authorization: Bearer $(cat ~/key-gold 2>/dev/null)" "$MAAS/maas-api/v1/models")
+if [ "$code" != 200 ]; then  # expired, or lost with a terminal restart: mint a new one as in Module 7
+  echo "gold key not usable (HTTP $code): minting a new one"
+  resp=$(curl -s -X POST "$MAAS/maas-api/v1/api-keys" -H "Authorization: Bearer $(oc whoami -t)" -H 'Content-Type: application/json' \
+    -d '{"name":"workshop-gold-m9","expiresIn":"72h","subscription":"granite-gold"}')
+  key=$(jq -r '.key // empty' <<<"$resp")
+  case "$key" in sk-oai-*) printf '%s' "$key" > ~/key-gold ;; *) echo "minting failed: $resp" ;; esac
+fi
 curl -s -o /dev/null -w 'MaaS with the gold key: %\{http_code}\n' "$MAAS/{model_namespace}/{model_name}/v1/chat/completions" \
   -H "Authorization: Bearer $(cat ~/key-gold)" -H 'Content-Type: application/json' \
   -d '{"model": "{model_name}", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5}'
 ----
 
 Expected result: `from {gpu_namespace}: 000` followed by `no answer (curl exit 28)` (the connection
-times out); `from ws-guard: 200`; the judge still blocks the pipe bomb; and MaaS still answers `200`.
+times out); `from ws-guard: 200`; the judge still blocks the pipe bomb; and MaaS still answers `200`
+(after `gold key not usable … minting a new one` if your Day 2 key expired or your terminal lost it).
 The model is now reachable only through the governed front door and by the components you named.
 
 == Evidence checkpoint

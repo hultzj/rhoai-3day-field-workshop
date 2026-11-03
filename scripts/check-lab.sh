@@ -140,6 +140,13 @@ for page in "$pages"/*.adoc; do
   ' "$page" >&2 || failed=1
 done
 
+# Every embedded step video exists: a guide must not point at a video that was never recorded.
+for page in "$pages"/*.adoc; do
+  for v in $(grep -o -E '^video::[^[]+' "$page" | cut -d: -f3); do
+    [[ -f content/modules/ROOT/assets/images/$v ]] || fail "$page embeds video $v, which is not in assets/images"
+  done
+done
+
 # The field-content Showroom builder (quay.io/rhpds/antora) has no mermaid extension.
 if grep -n '^\[mermaid' "$pages"/*.adoc >&2; then
   fail "[mermaid] blocks do not render in Showroom; use a table or numbered list"

@@ -1,0 +1,12 @@
+{
+  "name": "rhoai-3day-field-workshop-videos",
+  "private": true,
+  "description": "Records the workshop's step videos (see README.md); not part of the Showroom build",
+  "type": "module",
+  "scripts": {
+    "test": "node test.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.64.0"
+  }
+}
