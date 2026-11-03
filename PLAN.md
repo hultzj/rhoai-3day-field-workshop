@@ -198,6 +198,30 @@ Module 6 (publish, govern, consume), verified:
   `granite-gold/kuro 378` tokens; `limited_calls` 7; `authorized_calls` by subscription;
   `vllm:generation_tokens_total`. Labels only on traffic after the TelemetryPolicy existed.
 
+## Day 3 spikes over MaaS (2026-11-03, as `kuro`)
+
+- **EvalHub via MaaS:** Secret `maas-model` with `api-key` (gold key) and `ca_cert` (ingress CA from
+  `default-ingress-cert`), `model.url = https://maas.<domain>/ws-models/granite4-tiny/v1`,
+  `auth.secret_ref: maas-model` -> `arc_easy` 50 examples completed in 120 s: acc 0.56 (stderr 0.07)
+  vs 0.60 against the internal endpoint on Day 1: same model, within noise.
+- **NeMo Guardrails:** `NemoGuardrails` (v1alpha1) with `security.opendatahub.io/enable-auth` ->
+  route 401 anonymous, token lists configs. Checks API needs `"model": ""` and selects the config
+  with `guardrails.config_id` (top-level `config_id` is ignored and the default config runs).
+  `regex-only` (regex check input): blocks "pipe bomb" and SSN in 0.02 s, misses address lookup
+  and lock picking. `self-check` (LLM judge = Granite): 6/6 correct incl. trap prompts ("kill a
+  Python process", "shoot portraits"), 0.3-7 s per verdict, `llm_calls_count: 1`.
+- **Judge TLS:** the guardrails server cannot verify the MaaS gateway (self-signed ingress CA on this
+  sandbox): `caBundleConfig` is ignored while OpenShift AI injects `odh-trusted-ca-bundle` (the
+  init container reads only its `ca-bundle.crt` + the service CA; the opt-out annotation did not
+  stop the injection; the pod template has no volumes). Cluster-wide trust (proxy trustedCA) was
+  not attempted (may roll nodes). Judge therefore calls the llm-d workload Service
+  `https://granite4-tiny-kserve-workload-svc.ws-models.svc.cluster.local:8000/v1`, whose cert is
+  signed by the service CA (trusted automatically).
+- **Finding:** that workload Service answered 200 to an unauthenticated pod in another project
+  (MaaS governs only the front door). NetworkPolicy on the workload pods allowing
+  `openshift-ingress`, `ws-guard` and the model's own namespace: probe from `ws-gpu-lab` blocked
+  (curl timeout), from `ws-guard` 200, MaaS call still 200. Becomes Module 9's closing exercise.
+
 ## MLflow spike (2026-11-02, as `kuro`) for Module 7
 
 - DSC `spec.components.mlflowoperator.managementState: Managed` -> `MLflowOperatorReady=True` in
