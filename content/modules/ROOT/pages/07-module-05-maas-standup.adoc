@@ -1,0 +1,413 @@
+= Module 5: Stand up Models-as-a-Service
+:navtitle: Module 5: Stand up MaaS
+
+A model endpoint per team does not scale. Every team ends up running its own GPU servers,
+handing out its own credentials, and nobody can say who used how much. Customers want one internal
+service: models published once, consumed with API keys, limited per tier, and metered. The
+customer question: _what does it take to run models as a governed internal service on our own
+cluster?_
+
+In this module you build the platform layer of OpenShift AI's Models-as-a-Service (MaaS): its
+database, the Red Hat Connectivity Link (Kuadrant) instance that enforces policy, the MaaS
+gateway, and MaaS itself, then turn on the monitoring that meters usage.
+
+NOTE: The OpenShift AI {rhoai_version} release notes list several Models-as-a-Service capabilities
+as *Technology Preview*, among them "vLLM runtime support for Models-as-a-Service" (which this
+workshop uses) and the MaaS observability dashboard. Technology Preview features are not supported
+with Red Hat production SLAs. Check the
+link:https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/{rhoai_version}/html/release_notes/technology-preview-features_relnotes[release notes^]
+for the version your customer runs.
+
+.New to MaaS and Connectivity Link?
+[%collapsible]
+====
+* *Kuadrant (Red Hat Connectivity Link)* — policy for Gateway API gateways: `AuthPolicy`
+  (authentication and authorization, enforced by Authorino) and rate limits (enforced by Limitador).
+* *Authorino* — the authorization service the gateway calls for every request (Envoy ext_authz).
+* *Limitador* — the rate-limit service the gateway calls to count requests or tokens.
+* *maas-api* — the MaaS service that issues API keys, lists the models a key may use, and answers
+  the gateway's "is this key allowed?" questions.
+* *User-workload monitoring* — the second Prometheus that scrapes namespaces outside
+  `openshift-*`, where Limitador's usage counters live.
+====
+
+== Technical context
+
+[cols="1,2,2",options="header"]
+|===
+| Piece | Where | Role
+
+| PostgreSQL + `maas-db-config`
+| `redhat-ods-applications`
+| stores API keys and their subscriptions; maas-api reads the connection URL from the Secret
+
+| `Kuadrant` instance
+| `kuadrant-system`
+| deploys Authorino and Limitador and turns every `AuthPolicy` and rate limit into gateway configuration
+
+| Gateway `{maas_gateway}`
+| `openshift-ingress`
+| the single entrance for every MaaS call; the name is fixed, MaaS looks for it
+
+| MaaS (`aigateway.modelsAsAService` in the DSC)
+| `redhat-ods-applications`, `redhat-ai-gateway-infra`
+| maas-controller (reconciles MaaS resources) and maas-api; creates the `{maas_namespace}` namespace
+
+| User-workload monitoring + `TelemetryPolicy`
+| `openshift-monitoring`, `openshift-ingress`
+| scrape Limitador and Authorino; label usage by user, subscription and model
+|===
+
+The MaaS gateway is a cloud load balancer. On AWS, OpenShift's ingress operator also publishes a
+DNS record for the gateway's listener hostname, so `maas.{cluster_domain}` resolves to that load
+balancer without a Route.
+
+== Learning objectives
+
+* Provision MaaS's database and pass its connection to MaaS as a Secret.
+* Create the Kuadrant instance, and fix the TLS mismatch between the gateway and Authorino.
+* Prove that Module 4's AuthPolicy is now enforced.
+* Create the MaaS gateway, enable MaaS in the DataScienceCluster, and prove maas-api is reachable
+  and authenticated.
+* Turn on user-workload monitoring and a TelemetryPolicy for usage metering.
+
+== Exercise 1: The MaaS database
+
+maas-api stores API keys in PostgreSQL. Create the credentials and the connection Secret first
+(MaaS fails to start without them), then the database. The password is generated in your terminal
+and never written anywhere else.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+# The password is generated once; the database keeps the one it was initialised with, and the
+# connection URL is always built from the stored password, so a re-run repairs a missing Secret.
+oc get secret postgres-creds -n redhat-ods-applications >/dev/null 2>&1 ||
+  oc create secret generic postgres-creds -n redhat-ods-applications --from-literal=POSTGRESQL_USER=maas \
+    --from-literal=POSTGRESQL_PASSWORD="$(openssl rand -hex 16)" --from-literal=POSTGRESQL_DATABASE=maas
+if ! oc get secret maas-db-config -n redhat-ods-applications >/dev/null 2>&1; then
+  PW=$(oc get secret postgres-creds -n redhat-ods-applications -o jsonpath='{.data.POSTGRESQL_PASSWORD}' | base64 -d)
+  [ -n "$PW" ] && oc create secret generic maas-db-config -n redhat-ods-applications \
+    --from-literal=DB_CONNECTION_URL="postgresql://maas:$PW@postgres:5432/maas?sslmode=disable"
+  unset PW
+fi
+oc apply -n redhat-ods-applications -f - <<'EOF'
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 5Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels: {app: postgres}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: postgres}}
+  template:
+    metadata: {labels: {app: postgres}}
+    spec:
+      containers:
+      - name: postgres
+        image: {postgres_image}
+        ports: [{containerPort: 5432}]
+        envFrom: [{secretRef: {name: postgres-creds}}]
+        volumeMounts: [{name: data, mountPath: /var/lib/pgsql/data}]
+        readinessProbe:
+          exec: {command: ["pg_isready", "-U", "maas"]}
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes: [{name: data, persistentVolumeClaim: {claimName: postgres-data}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: {app: postgres}
+  ports: [{port: 5432, targetPort: 5432}]
+EOF
+oc rollout status deploy/postgres -n redhat-ods-applications --timeout=300s
+----
+
+Expected result: the two Secrets are created (on a re-run they are left as they are), the PVC,
+Deployment and Service are created, and `deployment "postgres" successfully rolled out`.
+
+== Exercise 2: Create the Kuadrant instance
+
+The Connectivity Link operator is installed; the `Kuadrant` CR asks it to deploy Authorino and
+Limitador and start enforcing policies.
+
+[source,bash,role="execute"]
+----
+oc apply -f - <<'EOF'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kuadrant-system
+---
+apiVersion: kuadrant.io/v1beta1
+kind: Kuadrant
+metadata:
+  name: kuadrant
+  namespace: kuadrant-system
+spec:
+  observability:
+    enable: true
+EOF
+oc wait kuadrant/kuadrant -n kuadrant-system --for=condition=Ready --timeout=300s
+oc get pods -n kuadrant-system
+----
+
+Expected result: `kuadrant.kuadrant.io/kuadrant condition met`, and `kuadrant-system` runs an
+`authorino-…` pod and a `limitador-limitador-…` pod (a second Limitador pod may show
+`Terminating` for a few seconds while the operator reconfigures it). `observability.enable` also creates the
+monitors Exercise 6 relies on.
+
+Now Module 4's endpoint again:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+export CURL_CA_BUNDLE=~/ingress-ca.crt
+URL=$(oc get llminferenceservice {model_name} -n {model_namespace} -o jsonpath='{.status.url}')
+oc wait authpolicy/{inference_gateway}-authn -n openshift-ingress --for=condition=Enforced --timeout=120s
+sleep 20
+for who in anonymous you; do
+  if [ $who = you ]; then H="Authorization: Bearer $(oc whoami -t)"; else H="X-Nobody: 1"; fi
+  curl -s -o /dev/null -w "$who: %\{http_code}\n" -H "$H" "$URL/v1/models"
+done
+----
+
+NOTE: Both calls fail with HTTP 500. This is expected: the policy is now enforced, but the gateway
+cannot reach Authorino. The next exercise finds out why.
+
+Expected result: the AuthPolicy reports `condition met` for `Enforced`, and both lines print `500`.
+
+== Exercise 3: Find and fix the gateway-to-Authorino TLS mismatch (break and restore)
+
+Read what the gateway logs and how OpenShift AI configured it to reach Authorino:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+GW_POD=$(oc get pods -n openshift-ingress -l gateway.networking.k8s.io/gateway-name={inference_gateway} -o name | head -1)
+oc logs -n openshift-ingress "$GW_POD" --tail=50 | grep -m1 'kuadrant_wasm_shim'
+oc get envoyfilter {inference_gateway}-authn-ssl -n openshift-ingress \
+  -o jsonpath='{.spec.configPatches[0].patch.value.transport_socket.name}{"\n"}'
+oc get authorino authorino -n kuadrant-system -o jsonpath='authorino listener TLS: {.spec.listener.tls}{"\n"}'
+----
+
+Expected result: the gateway logs `kuadrant_wasm_shim: gRPC status code is not OK`; OpenShift AI's
+EnvoyFilter connects to Authorino with `envoy.transport_sockets.tls`; and the Authorino listener
+says `{"enabled":false}`. The gateway speaks TLS, Authorino expects plaintext, every authorization
+call fails, and the gateway fails closed with a 500.
+
+Give Authorino a certificate from the service CA (which the gateway already trusts) and switch its
+listener to TLS:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc annotate service authorino-authorino-authorization -n kuadrant-system \
+  service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert --overwrite
+until oc get secret authorino-server-cert -n kuadrant-system >/dev/null 2>&1; do sleep 3; done
+oc patch authorino authorino -n kuadrant-system --type merge \
+  -p '{"spec":{"listener":{"tls":{"enabled":true,"certSecretRef":{"name":"authorino-server-cert"}}}}}'
+oc rollout status deploy/authorino -n kuadrant-system --timeout=180s
+sleep 10
+curl -s -o /dev/null -w 'anonymous: %\{http_code}\n' "$URL/v1/models"
+curl -s -o /dev/null -w 'bad token: %\{http_code}\n' -H 'Authorization: Bearer not-a-token' "$URL/v1/models"
+curl -s -o /dev/null -w 'you:       %\{http_code}\n' -H "Authorization: Bearer $(oc whoami -t)" "$URL/v1/models"
+----
+
+Expected result: `authorino patched`, the rollout completes, and then `anonymous: 401`,
+`bad token: 401`, `you: 200`. The llm-d endpoint now requires a valid OpenShift token, enforced
+by Authorino at the gateway, without touching the model.
+
+In short: a policy needs an enforcer, and the enforcer must speak the protocol the gateway expects.
+
+== Exercise 4: The MaaS gateway
+
+MaaS expects a Gateway named `{maas_gateway}` in `openshift-ingress`. This one is a cloud load
+balancer with a hostname under the cluster domain, using the cluster's default ingress certificate.
+
+[source,yaml,subs="attributes+"]
+----
+kind: Gateway
+metadata:
+  name: {maas_gateway}                             # <1>
+  labels:
+    kuadrant.io/gateway: "true"                    # <2>
+  annotations:
+    security.opendatahub.io/authorino-tls-bootstrap: "true"   # <3>
+spec:
+  listeners:
+  - hostname: maas.{cluster_domain}                # <4>
+    tls: {certificateRefs: [{name: router-certs-default}]}    # <5>
+----
+<1> *name* — fixed: maas-controller looks for exactly this Gateway.
+<2> *kuadrant.io/gateway* — Kuadrant manages policies on this gateway.
+<3> *authorino-tls-bootstrap* — OpenShift AI wires the gateway's TLS connection to Authorino, the one you just fixed.
+<4> *hostname* — the ingress operator publishes a DNS record for it, pointing at the gateway's load balancer.
+<5> *certificateRefs* — the cluster's default ingress certificate, already in `openshift-ingress`.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
+oc apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {maas_gateway}
+  namespace: openshift-ingress
+  labels:
+    kuadrant.io/gateway: "true"
+    opendatahub.io/managed: "false"
+  annotations:
+    opendatahub.io/managed: "false"
+    security.opendatahub.io/authorino-tls-bootstrap: "true"
+spec:
+  gatewayClassName: data-science-gateway-class
+  listeners:
+  - name: https
+    hostname: maas.$DOMAIN
+    port: 443
+    protocol: HTTPS
+    allowedRoutes:
+      namespaces: {from: All}
+    tls:
+      mode: Terminate
+      certificateRefs: [{group: "", kind: Secret, name: router-certs-default}]
+EOF
+oc wait gateway/{maas_gateway} -n openshift-ingress --for=condition=Programmed --timeout=300s
+oc get gateway {maas_gateway} -n openshift-ingress -o jsonpath='address: {.status.addresses[0].value}{"\n"}'
+oc get dnsrecords -n openshift-ingress -o jsonpath='{range .items[*]}{.spec.dnsName} -> {.spec.targets[0]}{"\n"}\{end}'
+----
+
+Expected result: `condition met` for `Programmed`; the address is an AWS load balancer hostname
+(`….elb.amazonaws.com`); and a DNS record `maas.{cluster_domain}.` points at that same hostname.
+
+== Exercise 5: Enable MaaS
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc patch datasciencecluster default-dsc --type merge \
+  -p '{"spec":{"components":{"aigateway":{"managementState":"Managed","modelsAsAService":{"managementState":"Managed"}}}}}'
+until [ "$(oc get datasciencecluster default-dsc -o jsonpath='{.status.conditions[?(@.type=="AIGatewayReady")].status}')" = True ]; do sleep 10; done
+until oc get deploy maas-api -n redhat-ai-gateway-infra >/dev/null 2>&1; do sleep 5; done
+oc rollout status deploy/maas-api -n redhat-ai-gateway-infra --timeout=300s
+oc get namespace {maas_namespace}
+MAAS=https://maas.$DOMAIN
+curl -s -o /dev/null -w 'maas-api anonymous: %\{http_code}\n' "$MAAS/maas-api/v1/models"
+curl -s -w '\n' -H "Authorization: Bearer $(oc whoami -t)" "$MAAS/maas-api/v1/models"
+----
+
+Expected result: `AIGatewayReady` becomes `True`, `maas-api` rolls out in
+`redhat-ai-gateway-infra`, the namespace `{maas_namespace}` is `Active`, anonymous gets `401`,
+and your token gets `{"data":[],"object":"list"}`: MaaS is running and protected, with no models
+published yet.
+
+NOTE: In the first minute after the gateway and MaaS appear, a call can return `503` or an
+unrelated error while routes are programmed and DNS settles. This is expected. Wait 30 seconds and
+re-run the two `curl` lines. The Web Terminal runs inside the cluster and resolves
+`maas.{cluster_domain}` as soon as the DNS record exists; a laptop that cached an older answer may
+take a few minutes longer.
+
+The OpenShift AI dashboard shows MaaS pages only when its feature flags are on. Turn on the MaaS
+pages and the usage dashboards:
+
+[source,bash,role="execute"]
+----
+oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications --type merge \
+  -p '{"spec":{"dashboardConfig":{"modelAsService":true,"observabilityDashboard":true}}}'
+oc get odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+  -o jsonpath='{.spec.dashboardConfig.modelAsService} {.spec.dashboardConfig.observabilityDashboard}{"\n"}'
+----
+
+Expected result: `odhdashboardconfig.opendatahub.io/odh-dashboard-config patched` and `true true`.
+After a dashboard refresh (it can take a minute), *Settings* gains *MaaS governance* and the left
+menu gains *Gen AI studio*.
+
+== Exercise 6: Meter usage
+
+Limitador runs in `kuadrant-system`, outside the `openshift-*` namespaces that the platform
+Prometheus scrapes. Turn on user-workload monitoring, and add a TelemetryPolicy so usage counters
+carry the user, subscription and model:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get configmap cluster-monitoring-config -n openshift-monitoring -o jsonpath='{.data.config\.yaml}' 2>/dev/null
+----
+
+Expected result: nothing, or a configuration without `enableUserWorkload: true`. If your cluster
+already has a `cluster-monitoring-config` with other settings, add `enableUserWorkload: true` to it
+instead of applying the ConfigMap below, which would replace them.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc apply -f - <<'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    enableUserWorkload: true
+---
+apiVersion: extensions.kuadrant.io/v1alpha1
+kind: TelemetryPolicy
+metadata:
+  name: maas-telemetry
+  namespace: openshift-ingress
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: {maas_gateway}
+  metrics:
+    default:
+      labels:
+        model: responseBodyJSON("/model")
+        user: auth.identity.userid
+        subscription: auth.identity.selected_subscription
+        organization_id: auth.identity.subscription_info.organizationId
+        cost_center: auth.identity.subscription_info.costCenter
+EOF
+oc wait telemetrypolicy/maas-telemetry -n openshift-ingress --for=condition=Enforced --timeout=120s
+until [ "$(oc get pods -n openshift-user-workload-monitoring --no-headers 2>/dev/null | grep -c Running)" -ge 3 ]; do sleep 10; done
+oc get pods -n openshift-user-workload-monitoring
+----
+
+Expected result: the TelemetryPolicy reports `condition met` for `Enforced`, and
+`openshift-user-workload-monitoring` runs `prometheus-operator`, `prometheus-user-workload-0/1` and
+`thanos-ruler-user-workload-0/1`. Labels apply to traffic from now on, not retroactively.
+
+== Evidence checkpoint
+
+Before continuing, verify that you can answer:
+
+* Why did Module 4's endpoint go from 200 to 500 to 401 for an anonymous caller?
+* Where does maas-api keep API keys, and how does it learn where that is?
+* How does `maas.{cluster_domain}` reach the MaaS gateway?
+* Why does usage metering need user-workload monitoring?
+
+.Answer key
+[%collapsible]
+====
+* 200: the AuthPolicy existed but nothing enforced it. 500: the Kuadrant instance enforced it, but
+  the gateway's TLS connection to Authorino failed (Authorino listened in plaintext), so the gateway
+  failed closed. 401: with Authorino serving TLS, the policy runs and rejects callers without a valid
+  token.
+* In PostgreSQL in `redhat-ods-applications`; maas-api reads the connection URL from the
+  `maas-db-config` Secret.
+* The Gateway's Service is an AWS load balancer, and the ingress operator published a DNS record
+  for the listener hostname that points at it.
+* Limitador and Authorino run in `kuadrant-system`; only the user-workload Prometheus scrapes
+  namespaces outside `openshift-*`.
+====
+
+Proceed to xref:08-module-06-maas-govern.adoc[Module 6: Govern and consume MaaS].

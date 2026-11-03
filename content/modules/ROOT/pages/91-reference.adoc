@@ -16,6 +16,12 @@
 | link:https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/[Red Hat OpenShift AI^]
 | model catalog, model registry, KServe and the vLLM serving runtimes
 
+| link:https://llm-d.ai/[llm-d^]
+| the endpoint picker (EPP), its scorers, and the InferencePool it schedules over
+
+| link:https://docs.redhat.com/en/documentation/red_hat_connectivity_link/[Red Hat Connectivity Link^]
+| Kuadrant, AuthPolicy, rate limiting with Authorino and Limitador, TelemetryPolicy
+
 | link:https://docs.vllm.ai/[vLLM^]
 | engine arguments (`--max-model-len`, tool calling, KV cache sizing) and startup memory report
 |===
@@ -62,6 +68,15 @@
   isolation. Use MIG or a supported sharing mode where isolation matters.
 * *Performance.* One L4 per cluster demonstrates mechanisms; it does not predict latency or
   throughput on production hardware.
+* *Production layout of llm-d.* Two replicas sharing one L4 show the scheduler choosing between
+  endpoints; production pools give each replica its own GPU. Prefix-affinity numbers here are for
+  identical, synthetic prompts.
+* *Support status of MaaS.* The 3.5 release notes list several MaaS capabilities (including vLLM
+  runtime support for MaaS) as Technology Preview. Distributed Inference with llm-d is generally
+  available on OpenShift in 3.5.
+* *The gateway-to-Authorino TLS fix as a documented procedure.* Module 5 enables TLS on the Authorino
+  listener because OpenShift AI's EnvoyFilter calls it over TLS; check the documentation of your
+  version before relying on this in production.
 * *Automatic registry-to-deployment linkage.* The registry does not watch the cluster: the
   InferenceService's registry labels alone left the dashboard's *Deployments* column at `-`. Module 3
   records the deployment explicitly through the registry API (serving environment and inference
@@ -73,6 +88,9 @@
   driver and `NVIDIADriver` CR.
 * Module 3: OpenShift AI {rhoai_version} documentation, _Managing model registries_, _Working with
   model registries_ and _Deploying models_ (single-model serving, vLLM runtime, authentication).
+* Modules 4-6: OpenShift AI {rhoai_version} documentation, _Deploying models_ (Distributed Inference
+  with llm-d) and _Models-as-a-Service_; Red Hat Connectivity Link documentation;
+  link:https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.5/html/release_notes/technology-preview-features_relnotes[OpenShift AI 3.5 Technology Preview features^].
 * Workshop sources this guide builds on:
   link:https://rhai-code.github.io/zt-rhoai-operations-showroom/modules/index.html[RHOAI Operations Workshop^],
   link:https://rhpds.github.io/ph-deploy-configure-rhoai/modules/index.html[RHOAI Deploy & Configure^],

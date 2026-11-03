@@ -7,6 +7,11 @@
 * xref:04-module-02-gpus-dra.adoc[Module 2: GPUs the DRA way]
 * xref:05-module-03-onboard-model.adoc[Module 3: Onboard a model]
 
+.Day 2: model to governed service (185 minutes)
+* xref:06-module-04-llm-d.adoc[Module 4: llm-d]
+* xref:07-module-05-maas-standup.adoc[Module 5: Stand up MaaS]
+* xref:08-module-06-maas-govern.adoc[Module 6: Govern and consume MaaS]
+
 .Wrap-up
 * xref:90-cleanup.adoc[Cleanup]
 * xref:91-reference.adoc[Technical Reference]

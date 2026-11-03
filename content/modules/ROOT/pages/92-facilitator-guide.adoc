@@ -85,6 +85,10 @@ Every line must print `PASS`. Fix any `FAIL` before participants arrive.
   driver step takes about four minutes; Module 3's model start takes about five. Use the waits to
   explain what is happening.
 
+* Day 2: Module 4 (55 min) runs in the 11:00-12:00 slot, Module 5 (50 min) in 2:00-2:50, Module 6
+  (80 min) in 3:45-5:15. Each model recreate takes about three minutes. Module 5 Exercise 2 ends in
+  HTTP 500 on purpose; Exercise 3 diagnoses and fixes it.
+
 == Known issues
 
 * *RHCL installed after OpenShift AI.* KServe's `llmisvc-controller-manager` checks for the
@@ -92,6 +96,11 @@ Every line must print `PASS`. Fix any `FAIL` before participants arrive.
   `GatewayPreconditionNotMet: AuthPolicy CRD is not available` until that controller restarts:
   `oc rollout restart deployment/llmisvc-controller-manager -n redhat-ods-applications`.
   Install the workshop operators before class so this happens once, by you.
+* *DNS for `maas.<domain>`.* The ingress operator publishes the record within seconds and the Web
+  Terminal resolves it at once; laptops with cached negative answers may need several minutes.
+* *User-workload monitoring.* Module 5 enables it. If the cluster already has a
+  `cluster-monitoring-config`, participants must add `enableUserWorkload: true` to it rather than
+  replace it.
 * *GPU Operator catalog on OpenShift 5.0 pre-release.* The v5.0 certified index does not carry
   `gpu-operator-certified`; use the `sandbox-ocp5` profile.
 

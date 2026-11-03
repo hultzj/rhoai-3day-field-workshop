@@ -1,0 +1,369 @@
+= Module 4: llm-d, from one server to an inference pool
+:navtitle: Module 4: llm-d
+
+One vLLM server is fine until traffic grows. Then you add replicas, and a new question appears:
+_which replica should serve this request?_ A round-robin load balancer does not know that one
+replica already holds a long shared prompt in its KV cache, or that another has a queue. llm-d
+puts a scheduler in front of the replicas that does know, by reading each server's live state. The
+customer question: _what does llm-d add over plain vLLM, and how can I see it working?_
+
+In this module you replace Day 1's single server with two replicas of the same model sharing the
+one GPU, put llm-d's scheduler in front of them, and watch it route requests by prompt prefix. You
+also find out what the deployment does, and does not, protect yet.
+
+.New to llm-d?
+[%collapsible]
+====
+* *LLMInferenceService* — the KServe resource for llm-d deployments: model, replicas, and a
+  `router` (gateway, route, scheduler).
+* *InferencePool* — a Gateway API Inference Extension object: the set of model-server pods one
+  route sends traffic to.
+* *EPP (endpoint picker)* — llm-d's scheduler; for every request it scores each pod of the pool and
+  tells the gateway which one to use.
+* *Prefix cache* — vLLM's reuse of KV-cache blocks for prompt prefixes it has already processed;
+  a hit skips recomputing those tokens.
+* *Gateway API* — the Kubernetes routing API (`Gateway`, `HTTPRoute`); OpenShift implements it with
+  an Envoy-based gateway controller.
+====
+
+== Technical context
+
+The request path after this module:
+
+[cols="1,3",options="header"]
+|===
+| Hop | What happens
+
+| Route `inference.{cluster_domain}`
+| the OpenShift router passes the connection to the gateway's Service
+
+| Gateway `{inference_gateway}` (Envoy)
+| matches the `HTTPRoute` KServe created for your model (path `/{model_namespace}/{model_name}`)
+
+| EPP (`{model_name}-kserve-router-scheduler`)
+| scores every pod of the `InferencePool` and names one
+
+| vLLM pod
+| serves the request; its prefix cache is warm or cold depending on that choice
+|===
+
+The EPP's score is a weighted sum of plug-in scorers: queue length, KV-cache utilisation, an
+approximate prefix-cache match, and a least-recently-used tie-breaker for prompts no pod has seen.
+Both replicas share one L4 through a single `ResourceClaim`, exactly as `share-a` and `share-b` did
+in Module 2. Each replica is sized to fit in half of the GPU: `--gpu-memory-utilization=0.40`
+passes vLLM's start-up memory check, and `--kv-cache-memory-bytes=3G` gives each a fixed KV cache
+instead of letting the first replica claim everything. The model is a hybrid (Mamba) model, so
+prefix caching must be switched on explicitly with `--enable-prefix-caching`.
+
+// NOT-IN-DOCS: two vLLM processes sharing one GPU through a shared DRA claim is not an OpenShift AI
+// documented configuration; it is used because the workshop cluster has one GPU.
+NOTE: Two replicas on one GPU share its memory and compute with no isolation. It is done here so
+the scheduler has more than one endpoint to choose from on a one-GPU cluster; production pools
+give each replica its own GPU or MIG slice.
+
+== Learning objectives
+
+* Free a GPU held by an exclusive claim, and give it to two replicas through a shared claim.
+* Deploy an `LLMInferenceService` with llm-d's scheduler, and create the Gateway it routes through.
+* Name the objects KServe generates and the EPP's scorers and weights.
+* Show from vLLM's own metrics that the EPP keeps a prompt family on the replica with its prefix cached.
+* Show that a policy object is not enforcement, and that the pool survives losing a replica.
+
+== Exercise 1: Free the GPU
+
+Day 1's InferenceService holds the GPU through an exclusive claim. Two new replicas cannot start
+while it does. Delete it and watch the claim go:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc delete isvc {model_name} -n {model_namespace} --ignore-not-found --wait=true
+oc get resourceclaims -n {model_namespace}
+until [ -z "$(oc get resourceclaims -n {model_namespace} -o name | grep {model_name}-predictor-)" ]; do sleep 3; done
+oc get resourceclaims -n {model_namespace}
+----
+
+Expected result: `inferenceservice.serving.kserve.io "{model_name}" deleted`; the first listing may
+still show the predictor's claim `allocated,reserved` while its pod terminates, and the second
+prints `No resources found in {model_namespace} namespace.` (or, if you are repeating this module,
+only `shared-l4`): the claim created from the template went with its pod, so the GPU is free.
+
+== Exercise 2: Deploy two replicas behind the scheduler
+
+[source,yaml,subs="attributes+"]
+----
+kind: LLMInferenceService
+spec:
+  replicas: 2                                    # <1>
+  router:
+    gateway: {}                                  # <2>
+    route: {}
+    scheduler: {}                                # <3>
+  template:
+    resourceClaims:
+    - {name: gpu, resourceClaimName: shared-l4}  # <4>
+    containers:
+    - name: main
+      env:
+      - name: VLLM_ADDITIONAL_ARGS               # <5>
+        value: "{vllm_shared_args}"
+----
+<1> *replicas* — two vLLM pods for the scheduler to choose between.
+<2> *gateway: {}* — attach to OpenShift AI's default inference gateway, `openshift-ingress/{inference_gateway}`.
+<3> *scheduler: {}* — deploy llm-d's endpoint picker and an InferencePool; without it the route balances blindly.
+<4> *resourceClaimName* — both pods name the same standalone claim, so they share the one GPU.
+<5> *VLLM_ADDITIONAL_ARGS* — appended to the `vllm serve` command KServe's template builds; sizing and prefix caching as explained above.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc apply -n {model_namespace} -f - <<'EOF'
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: shared-l4
+spec:
+  devices:
+    requests:
+    - name: gpu
+      exactly:
+        deviceClassName: gpu.nvidia.com
+---
+apiVersion: serving.kserve.io/v1alpha2
+kind: LLMInferenceService
+metadata:
+  name: {model_name}
+spec:
+  replicas: 2
+  model:
+    uri: {model_uri}
+    name: {model_name}
+  router:
+    gateway: {}
+    route: {}
+    scheduler: {}
+  template:
+    tolerations: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
+    resourceClaims:
+    - name: gpu
+      resourceClaimName: shared-l4
+    containers:
+    - name: main
+      env:
+      - name: VLLM_ADDITIONAL_ARGS
+        value: "{vllm_shared_args}"
+      resources:
+        requests: {cpu: "1", memory: 8Gi}
+        limits: {cpu: "3", memory: 12Gi}
+        claims: [{name: gpu}]
+EOF
+sleep 30
+oc get llminferenceservice {model_name} -n {model_namespace} \
+  -o jsonpath='{range .status.conditions[?(@.type=="RouterReady")]}{.reason}: {.message}{"\n"}\{end}'
+----
+
+NOTE: The router reports an error. This is expected: KServe looks for a Gateway that does not exist
+yet, and the next exercise creates it.
+
+Expected result: `RefsInvalid: Managed HTTPRoute references non-existent Gateway
+openshift-ingress/{inference_gateway}`. The workload is already starting; only the route has
+nowhere to attach.
+
+== Exercise 3: Create the inference gateway
+
+The gateway follows the same pattern as OpenShift AI's own dashboard gateway: a ClusterIP Service
+whose certificate comes from the service CA, exposed through an OpenShift Route.
+
+[source,yaml,subs="attributes+"]
+----
+kind: Gateway
+spec:
+  gatewayClassName: data-science-gateway-class          # <1>
+  infrastructure:
+    parametersRef: {kind: ConfigMap, name: {inference_gateway}-config}   # <2>
+  listeners:
+  - port: 443
+    protocol: HTTPS
+    allowedRoutes: {namespaces: {from: All}}            # <3>
+    tls: {certificateRefs: [{name: {inference_gateway}-tls}]}           # <4>
+----
+<1> *gatewayClassName* — the class OpenShift AI installs, served by OpenShift's Envoy gateway controller.
+<2> *parametersRef* — a ConfigMap that shapes the generated Service: ClusterIP, with a service-CA certificate annotation.
+<3> *allowedRoutes* — accept HTTPRoutes from any namespace, including `{model_namespace}`.
+<4> *certificateRefs* — the certificate the service CA writes for that Service.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
+oc apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {inference_gateway}-config
+  namespace: openshift-ingress
+data:
+  service: |
+    metadata:
+      annotations:
+        service.beta.openshift.io/serving-cert-secret-name: {inference_gateway}-tls
+    spec:
+      type: ClusterIP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {inference_gateway}
+  namespace: openshift-ingress
+spec:
+  gatewayClassName: data-science-gateway-class
+  infrastructure:
+    parametersRef: {group: "", kind: ConfigMap, name: {inference_gateway}-config}
+  listeners:
+  - name: https
+    port: 443
+    protocol: HTTPS
+    allowedRoutes:
+      namespaces: {from: All}
+    tls:
+      mode: Terminate
+      certificateRefs: [{group: "", kind: Secret, name: {inference_gateway}-tls}]
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {inference_gateway}
+  namespace: openshift-ingress
+spec:
+  host: inference.$DOMAIN
+  port: {targetPort: 443}
+  tls: {termination: reencrypt, insecureEdgeTerminationPolicy: Redirect}
+  to: {kind: Service, name: {inference_gateway}-data-science-gateway-class}
+EOF
+oc wait gateway/{inference_gateway} -n openshift-ingress --for=condition=Programmed --timeout=180s
+oc wait llminferenceservice/{model_name} -n {model_namespace} --for=condition=Ready --timeout=900s
+oc get llminferenceservice {model_name} -n {model_namespace} -o jsonpath='{.status.url}{"\n"}'
+oc get pods,inferencepool,httproute -n {model_namespace}
+----
+
+Expected result: the Gateway reports `condition met` for `Programmed`, and after a few minutes the
+LLMInferenceService reports `condition met` for `Ready`. Its URL is
+`https://inference.{cluster_domain}/{model_namespace}/{model_name}`. The project now holds two
+`{model_name}-kserve-…` pods (`2/2`), one `{model_name}-kserve-router-scheduler-…` pod, the
+InferencePool `{model_name}-inference-pool` and the HTTPRoute `{model_name}-kserve-route`.
+
+In short: you wrote one resource; KServe generated the pool, the scheduler and the route.
+
+== Exercise 4: Read the scheduler's configuration
+
+The EPP receives its whole configuration as an argument. Read the scorers and their weights:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get deploy {model_name}-kserve-router-scheduler -n {model_namespace} \
+  -o jsonpath='{.spec.template.spec.containers[0].args[1]}' | sed -n '/schedulingProfiles/,$p'
+----
+
+Expected result: one scheduling profile, `default`, with `queue-scorer` weight 2,
+`kv-cache-utilization-scorer` weight 2, `prefix-cache-scorer` weight 3, `no-hit-lru-scorer`
+weight 2, and the `max-score-picker`. Prefix affinity carries the most weight, but a long queue or
+a full KV cache can outvote it.
+
+== Exercise 5: An open door (negative control)
+
+KServe also created an AuthPolicy (a Red Hat Connectivity Link object) that should require an
+OpenShift token on this gateway. Try the endpoint without one, then read the policy's status:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+export CURL_CA_BUNDLE=~/ingress-ca.crt
+URL=$(oc get llminferenceservice {model_name} -n {model_namespace} -o jsonpath='{.status.url}')
+curl -s -o /dev/null -w 'anonymous: %\{http_code}\n' "$URL/v1/models"
+oc get authpolicy -n openshift-ingress {inference_gateway}-authn \
+  -o jsonpath='{range .status.conditions[*]}{.type}={.status}: {.message}{"\n"}\{end}'
+----
+
+Expected result: `anonymous: 200`: anyone can call the model. The AuthPolicy is
+`Accepted=True` but `Enforced=False: kuadrant is not installed, please create resource`. A policy
+object is only a request; Module 5 installs the Kuadrant instance that enforces it.
+
+== Exercise 6: Watch the scheduler route by prefix
+
+Send two families of requests, each with its own long system prompt (about 1,500 tokens), five
+times each, and compare each replica's vLLM counters before and after.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+T="Authorization: Bearer $(oc whoami -t)"
+counters() {
+  for p in $(oc get pods -n {model_namespace} -l kserve.io/component=workload -o jsonpath='{.items[*].metadata.name}'); do
+    oc exec -n {model_namespace} "$p" -c main -- curl -sk https://localhost:8000/metrics |
+      awk -v p="$p" '/^vllm:request_success_total/ {r += $2} /^vllm:prefix_cache_hits_total/ {h = $2}
+                     END {printf "%s requests=%d prefix_cache_hits=%d\n", p, r, h}'
+  done
+}
+echo "BEFORE"; counters
+for family in alpha beta; do
+  policy="You are the $family support assistant. $(printf 'Follow the policy carefully. %.0s' $(seq 1 300))"
+  body=$(jq -n --arg p "$policy" '{model: "{model_name}", max_tokens: 20,
+    messages: [{role: "system", content: $p}, {role: "user", content: "Summarise the policy in one sentence."}]}')
+  for i in 1 2 3 4 5; do
+    curl -s -o /dev/null -w "$family#$i %\{http_code}  " -H "$T" -H 'Content-Type: application/json' "$URL/v1/chat/completions" -d "$body"
+  done; echo
+done
+echo "AFTER"; counters
+----
+
+Expected result: ten `200`s. Between BEFORE and AFTER, each replica's `requests` grows by exactly
+5, and each replica's `prefix_cache_hits` grows by about 4,096 tokens: the first request of a
+family misses, the next four reuse its cached prefix. The scheduler kept each family on one
+replica and sent the new family to the other.
+
+In short: llm-d turns a pool of servers into one cache-aware service.
+
+== Exercise 7: Lose a replica (break and restore)
+
+Delete one replica while sending requests, then watch it come back:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+VICTIM=$(oc get pods -n {model_namespace} -l kserve.io/component=workload -o jsonpath='{.items[0].metadata.name}')
+oc delete pod "$VICTIM" -n {model_namespace} --wait=false
+for i in $(seq 1 10); do
+  curl -s -o /dev/null -w '%\{http_code} ' -H "$T" -H 'Content-Type: application/json' "$URL/v1/chat/completions" \
+    -d '{"model": "{model_name}", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5}'
+  sleep 1
+done; echo
+until [ "$(oc get pods -n {model_namespace} -l kserve.io/component=workload --no-headers | grep -v Terminating | grep -c ' 2/2 ')" = 2 ]; do sleep 10; done
+oc get pods -n {model_namespace} -l kserve.io/component=workload
+oc get pod "$VICTIM" -n {model_namespace} -o name 2>/dev/null || echo "$VICTIM is gone"
+oc get resourceclaim shared-l4 -n {model_namespace} -o jsonpath='reserved for: {.status.reservedFor[*].name}{"\n"}'
+----
+
+Expected result: ten `200`s while one replica is gone; the EPP only routes to pods that are ready.
+After two to three minutes the loop ends with two workload pods `2/2 Running`: the survivor and a
+replacement with a new name; the deleted pod prints `… is gone`; and `reserved for:` names those two
+pods, sharing the claim. The pool is back to two ready replicas.
+
+== Evidence checkpoint
+
+Before continuing, verify that you can answer:
+
+* Which objects did KServe generate from your `LLMInferenceService`, and what does each do?
+* What evidence shows the scheduler routed by prefix rather than at random?
+* Why did the anonymous call succeed although an AuthPolicy exists?
+* Why do the two replicas need `--gpu-memory-utilization` and `--kv-cache-memory-bytes` here?
+
+.Answer key
+[%collapsible]
+====
+* The vLLM Deployment (the pods), the EPP Deployment (`…-router-scheduler`), the InferencePool (the
+  pods the route targets) and the HTTPRoute (the path on the gateway), plus an AuthPolicy on the
+  gateway.
+* Each family's five requests all landed on one replica (`requests` +5 on each), and that replica's
+  `prefix_cache_hits` rose by about 4,096 tokens: four warm hits after one cold miss.
+* Nothing enforces it: its status says `Enforced=False` because no Kuadrant instance exists.
+* They share one GPU. Without a lower utilisation target the second replica fails vLLM's start-up
+  free-memory check, and without a fixed KV-cache size the first replica would take the memory the
+  second needs.
+====
+
+Proceed to xref:07-module-05-maas-standup.adoc[Module 5: Stand up Models-as-a-Service].

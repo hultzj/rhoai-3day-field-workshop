@@ -19,7 +19,55 @@ Expected result: whichever exist of: projects `{gpu_namespace}` and `{model_name
 the `{registry_name}` registry (`AVAILABLE True`), `gpucluster.nvidia.com/gpu-cluster` and
 `nvidiadriver.nvidia.com/gpu-driver` (`ready`), and `nfd-instance`.
 
-Then delete them, model server and registry first, the GPU stack last:
+If you did Day 2, remove its pieces first, in the reverse order you built them (keys, then the
+service, then the platform). Look first:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get maasmodelref -n {model_namespace} --ignore-not-found; oc get maassubscription,maasauthpolicy -n {maas_namespace} --ignore-not-found
+oc get gateway -n openshift-ingress {maas_gateway} {inference_gateway} --ignore-not-found
+oc get kuadrant -n kuadrant-system --ignore-not-found; oc get deploy postgres -n redhat-ods-applications --ignore-not-found
+oc get datasciencecluster default-dsc -o jsonpath='aigateway: {.spec.components.aigateway.managementState}{"\n"}'
+----
+
+Expected result: whichever of these you created: the MaaSModelRef `{model_name}` (`Ready`), the
+subscriptions `granite-bronze` and `granite-gold` and the auth policy `granite-access` (`Active`),
+the Gateways `{maas_gateway}` and `{inference_gateway}` (`PROGRAMMED True`), the Kuadrant instance
+`kuadrant`, the `postgres` Deployment (`1/1`), and `aigateway: Managed`.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc delete job maas-client -n {model_namespace} --ignore-not-found
+oc delete maasmodelref {model_name} -n {model_namespace} --ignore-not-found
+oc delete maassubscription granite-gold granite-bronze -n {maas_namespace} --ignore-not-found
+oc delete maasauthpolicy granite-access -n {maas_namespace} --ignore-not-found
+oc delete llminferenceservice {model_name} -n {model_namespace} --ignore-not-found --wait=true
+oc patch datasciencecluster default-dsc --type merge \
+  -p '{"spec":{"components":{"aigateway":{"managementState":"Removed","modelsAsAService":{"managementState":"Removed"}}}}}'
+oc delete resourceclaim shared-l4 -n {model_namespace} --ignore-not-found
+oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications --type merge \
+  -p '{"spec":{"dashboardConfig":{"modelAsService":false,"observabilityDashboard":false}}}'
+oc delete telemetrypolicy maas-telemetry -n openshift-ingress --ignore-not-found
+# MaaS leaves these behind when set to Removed. Keep the {maas_namespace} namespace: its tenant
+# config carries a finalizer only the (now removed) MaaS controller can clear.
+oc delete authpolicy maas-gateway-auth -n openshift-ingress --ignore-not-found
+oc delete envoyfilter payload-processing -n openshift-ingress --ignore-not-found
+oc delete gateway {maas_gateway} {inference_gateway} -n openshift-ingress --ignore-not-found
+oc delete route {inference_gateway} -n openshift-ingress --ignore-not-found
+oc delete configmap {inference_gateway}-config -n openshift-ingress --ignore-not-found
+oc delete kuadrant kuadrant -n kuadrant-system --ignore-not-found --wait=true
+oc delete namespace kuadrant-system --ignore-not-found --wait=true
+oc delete deploy/postgres svc/postgres pvc/postgres-data secret/postgres-creds secret/maas-db-config -n redhat-ods-applications --ignore-not-found
+rm -f ~/key-gold ~/key-bronze ~/ingress-ca.crt
+oc get gateway -n openshift-ingress
+----
+
+Expected result: each object is reported `deleted` (or skipped if absent), and the last command
+lists only `data-science-gateway`, OpenShift AI's own. If you enabled user-workload monitoring only
+for this workshop, set `enableUserWorkload: false` in `cluster-monitoring-config` (or delete that
+ConfigMap if you created it).
+
+Then delete the Day 1 pieces, model server and registry first, the GPU stack last:
 
 [source,bash,role="execute",subs="attributes+"]
 ----

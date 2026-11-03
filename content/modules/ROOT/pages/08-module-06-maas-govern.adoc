@@ -1,0 +1,335 @@
+= Module 6: Govern and consume Models-as-a-Service
+:navtitle: Module 6: Govern and consume MaaS
+
+With the platform in place, the platform team's daily work is governance: which models are
+offered, to whom, at what rate, and what each consumer used. Application teams only want a URL and
+a key. The customer question: _how do I publish a model to my teams with tiers and limits, and how
+do they, and their applications, consume it?_
+
+In this module you publish the llm-d model through MaaS, define two subscription tiers with
+different token limits, mint an API key for each, prove each tier's limit, read usage per
+subscription, and call the model from an application that knows nothing but a URL and a key.
+
+NOTE: Several Models-as-a-Service capabilities used here are *Technology Preview* in OpenShift AI
+{rhoai_version}; see the note in xref:07-module-05-maas-standup.adoc[Module 5].
+
+.New to MaaS governance?
+[%collapsible]
+====
+* *MaaSModelRef* — publishes one model (here an `LLMInferenceService`) to MaaS; lives next to the model.
+* *MaaSSubscription* — a tier: which groups may hold it, which models it covers, and a token rate
+  limit per model; lives in `{maas_namespace}`.
+* *MaaSAuthPolicy* — which groups may call which models; lives in `{maas_namespace}`.
+* *API key* — an `sk-oai-…` secret issued by maas-api for one subscription; shown once, expires.
+* *Token rate limit* — a budget of prompt plus completion tokens per time window, counted by Limitador.
+====
+
+== Technical context
+
+A MaaS call carries an API key. The gateway asks Authorino to authenticate it; Authorino asks
+maas-api which subscription the key belongs to and whether that subscription covers the requested
+model. Limitador then charges the response's token count against the subscription's limit and
+answers `429` once the window's budget is spent. The TelemetryPolicy from Module 5 adds the user,
+subscription and model as labels on the counters Prometheus collects. The model never sees any of
+this: vLLM serves exactly as in Module 4.
+
+Subscriptions and auth policies must live in `{maas_namespace}`, the namespace maas-api reads;
+the `MaaSModelRef` lives in the model's project and points at the model.
+
+== Learning objectives
+
+* Attach a model to the MaaS gateway and publish it with a `MaaSModelRef`.
+* Define two tiers with `MaaSSubscription` and grant access with a `MaaSAuthPolicy`.
+* Mint API keys and call the model by path; prove 401 without a key.
+* Prove that tiers have different token limits (429) and read usage per subscription.
+* Consume the model from an application using only the OpenAI SDK, a URL and a key.
+
+== Exercise 1: Move the model to the MaaS gateway
+
+The `LLMInferenceService` must attach to `{maas_gateway}`, and vLLM must always report token usage
+(`--enable-force-include-usage`), which Limitador counts. Changing the pod spec would roll the
+Deployment and briefly need a third vLLM on the GPU, so recreate it instead:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc delete llminferenceservice {model_name} -n {model_namespace} --wait=true
+oc apply -n {model_namespace} -f - <<'EOF'
+apiVersion: serving.kserve.io/v1alpha2
+kind: LLMInferenceService
+metadata:
+  name: {model_name}
+spec:
+  replicas: 2
+  model:
+    uri: {model_uri}
+    name: {model_name}
+  router:
+    gateway:
+      refs:
+      - name: {maas_gateway}
+        namespace: openshift-ingress
+    route: {}
+    scheduler: {}
+  template:
+    tolerations: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
+    resourceClaims:
+    - name: gpu
+      resourceClaimName: shared-l4
+    containers:
+    - name: main
+      env:
+      - name: VLLM_ADDITIONAL_ARGS
+        value: "{vllm_shared_args} --enable-force-include-usage"
+      resources:
+        requests: {cpu: "1", memory: 8Gi}
+        limits: {cpu: "3", memory: 12Gi}
+        claims: [{name: gpu}]
+EOF
+oc wait llminferenceservice/{model_name} -n {model_namespace} --for=condition=Ready --timeout=900s
+oc get llminferenceservice {model_name} -n {model_namespace} -o jsonpath='{.status.url}{"\n"}'
+----
+
+Expected result: after a few minutes, `condition met`, and the URL is now
+`https://maas.{cluster_domain}/{model_namespace}/{model_name}`.
+
+== Exercise 2: Publish the model with two tiers
+
+[source,yaml,subs="attributes+"]
+----
+kind: MaaSSubscription
+metadata:
+  name: granite-bronze
+  namespace: {maas_namespace}                       # <1>
+spec:
+  owner:
+    groups: [{name: "system:authenticated:oauth"}]  # <2>
+  tokenMetadata: {costCenter: field-enablement, organizationId: korea-gps}   # <3>
+  modelRefs:
+  - name: {model_name}
+    namespace: {model_namespace}
+    tokenRateLimits: [{limit: 300, window: 1m}]     # <4>
+----
+<1> *namespace* — subscriptions are read only from `{maas_namespace}`.
+<2> *owner.groups* — who may hold this tier; `system:authenticated:oauth` means any user who logged in through OAuth (plain `system:authenticated` also matches ServiceAccounts).
+<3> *tokenMetadata* — chargeback labels that appear on the usage metrics.
+<4> *tokenRateLimits* — 300 tokens per minute for this model; the gold tier gets 20,000.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc apply -f - <<'EOF'
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSModelRef
+metadata:
+  name: {model_name}
+  namespace: {model_namespace}
+spec:
+  modelRef:
+    kind: LLMInferenceService
+    name: {model_name}
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: granite-gold
+  namespace: {maas_namespace}
+spec:
+  owner:
+    groups: [{name: "system:authenticated:oauth"}]
+  tokenMetadata: {costCenter: field-enablement, organizationId: korea-gps}
+  modelRefs:
+  - name: {model_name}
+    namespace: {model_namespace}
+    tokenRateLimits: [{limit: 20000, window: 1m}]
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSSubscription
+metadata:
+  name: granite-bronze
+  namespace: {maas_namespace}
+spec:
+  owner:
+    groups: [{name: "system:authenticated:oauth"}]
+  tokenMetadata: {costCenter: field-enablement, organizationId: korea-gps}
+  modelRefs:
+  - name: {model_name}
+    namespace: {model_namespace}
+    tokenRateLimits: [{limit: 300, window: 1m}]
+---
+apiVersion: maas.opendatahub.io/v1alpha1
+kind: MaaSAuthPolicy
+metadata:
+  name: granite-access
+  namespace: {maas_namespace}
+spec:
+  subjects:
+    groups: [{name: "system:authenticated:oauth"}]
+  modelRefs:
+  - name: {model_name}
+    namespace: {model_namespace}
+EOF
+sleep 20
+oc get maasmodelref {model_name} -n {model_namespace}
+oc get maasmodelref {model_name} -n {model_namespace} -o jsonpath='{range .status.conditions[*]}{.type}={.status}: {.message}{"\n"}\{end}'
+oc get maassubscription,maasauthpolicy -n {maas_namespace}
+----
+
+Expected result: the MaaSModelRef is `Ready` with endpoint `https://maas.{cluster_domain}/`, HTTPRoute
+`{model_name}-kserve-route` and gateway `{maas_gateway}`; its conditions include
+`GovernanceAttached=True: Active governance pairing found` and `RuntimeReady=True: Backend is
+healthy`; both subscriptions and the auth policy are `Active`.
+
+GUI view: in the OpenShift AI dashboard, *Settings* → *MaaS governance*, tab *Subscriptions*:
+`granite-bronze` and `granite-gold`, status `Ready`, one group and one model each. The *Create
+subscription* button there writes the same `MaaSSubscription` you just applied.
+
+image::08-maas-governance.png[The MaaS governance page listing the granite-bronze and granite-gold subscriptions as Ready]
+
+== Exercise 3: Mint keys and call the model
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+export CURL_CA_BUNDLE=~/ingress-ca.crt
+DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}'); MAAS=https://maas.$DOMAIN
+for tier in gold bronze; do
+  resp=$(curl -s -X POST "$MAAS/maas-api/v1/api-keys" -H "Authorization: Bearer $(oc whoami -t)" -H 'Content-Type: application/json' \
+    -d "{\"name\":\"workshop-$tier\",\"expiresIn\":\"8h\",\"subscription\":\"granite-$tier\"}")
+  key=$(jq -r '.key // empty' <<<"$resp" 2>/dev/null)
+  case "$key" in
+    sk-oai-*) printf '%s' "$key" > ~/key-$tier; echo "$tier key: $(cut -c1-10 ~/key-$tier)…" ;;
+    *) echo "$tier: minting failed, existing key kept: $resp" ;;
+  esac
+done
+curl -s "$MAAS/maas-api/v1/models" -H "Authorization: Bearer $(cat ~/key-gold)" | jq -r '.data[].id'
+CHAT="$MAAS/{model_namespace}/{model_name}/v1/chat/completions"
+curl -s "$CHAT" -H "Authorization: Bearer $(cat ~/key-gold)" -H 'Content-Type: application/json' \
+  -d '{"model": "{model_name}", "messages": [{"role": "user", "content": "One word: capital of Korea?"}], "max_tokens": 10}' \
+  | jq -c '{answer: .choices[0].message.content, usage}'
+curl -s -o /dev/null -w 'no key: %\{http_code}\n' "$CHAT" -H 'Content-Type: application/json' \
+  -d '{"model": "{model_name}", "messages": [{"role": "user", "content": "hi"}]}'
+----
+
+Expected result: two keys starting `sk-oai-`; the model list shows
+`publishers/{model_namespace}/models/{model_name}`; the chat call answers with a `usage` block
+(prompt and completion tokens); and `no key: 401`. The keys are stored in your Web Terminal's home
+directory; maas-api never shows them again. A failed mint prints `minting failed` and keeps any key
+already saved. The Web Terminal's home directory does not survive a terminal restart: re-run this
+block to mint new keys if `~/key-gold` is gone.
+
+== Exercise 4: Tiers are real (429)
+
+Send the same burst of twelve requests with each key:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+for tier in bronze gold; do
+  printf '%-7s' "$tier:"
+  for i in $(seq 1 12); do
+    curl -s -o /dev/null -w '%\{http_code} ' "$CHAT" -H "Authorization: Bearer $(cat ~/key-$tier)" -H 'Content-Type: application/json' \
+      -d '{"model": "{model_name}", "messages": [{"role": "user", "content": "Write one sentence about GPUs."}], "max_tokens": 40}'
+  done; echo
+done
+----
+
+Expected result: `bronze: 200 200 200 200 200 429 429 429 429 429 429 429` (five requests spend
+about 300 tokens, then the window's budget is gone), and `gold:` twelve `200`s. Same model, same
+gateway, different contract. Wait a minute and bronze is served again.
+
+== Exercise 5: Read usage per subscription
+
+Query the cluster's Prometheus (Thanos querier) for the counters Limitador exports:
+
+[source,bash,role="execute"]
+----
+Q=https://$(oc get route thanos-querier -n openshift-monitoring -o jsonpath='{.spec.host}')/api/v1/query
+for promql in 'sum by (subscription, user) (authorized_hits)' 'sum by (subscription) (authorized_calls)' 'sum(limited_calls)'; do
+  echo "$promql"
+  curl -s -G -H "Authorization: Bearer $(oc whoami -t)" "$Q" --data-urlencode "query=$promql" \
+    | jq -r '.data.result[] | "   \(.metric.subscription // "-") \(.metric.user // "-")  \(.value[1])"'
+done
+----
+
+Expected result: `authorized_hits` (tokens charged) for `granite-gold` and `granite-bronze` with
+your user name, `authorized_calls` (requests) per subscription, and `limited_calls` counting the
+`429`s. This is the raw material for chargeback by cost centre.
+
+GUI view: in the OpenShift console, *Observe* → *Metrics*, type `sum by (subscription)
+(authorized_hits)` and click *Run queries*: one row per subscription with its token count.
+
+image::08-observe-metrics.png[The Metrics page showing authorized_hits summed by subscription for granite-bronze and granite-gold]
+
+== Exercise 6: Consume it from an application
+
+An application needs only three things: the base URL, the model name and a key, plus trust in the
+gateway's certificate. This job runs the OpenAI Python SDK against MaaS with the gold key, mounted
+from a Secret, and verifies the gateway against the CA that signs the cluster's default ingress
+certificate (published by OpenShift in the `default-ingress-cert` ConfigMap):
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc create secret generic maas-key -n {model_namespace} --from-literal=api-key="$(cat ~/key-gold)" --dry-run=client -o yaml | oc apply -f -
+oc create configmap ingress-ca -n {model_namespace} --from-file=ca.crt=$HOME/ingress-ca.crt --dry-run=client -o yaml | oc apply -f -
+oc delete job maas-client -n {model_namespace} --ignore-not-found --wait=true
+oc apply -n {model_namespace} -f - <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: maas-client
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: app
+        image: image-registry.openshift-image-registry.svc:5000/redhat-ods-applications/s2i-minimal-notebook:{rhoai_version}
+        env:
+        - {name: BASE_URL, value: "$MAAS/{model_namespace}/{model_name}/v1"}
+        - {name: API_KEY, valueFrom: {secretKeyRef: {name: maas-key, key: api-key}}}
+        volumeMounts: [{name: ingress-ca, mountPath: /etc/ingress-ca}]
+        command: ["bash", "-c"]
+        args:
+        - |
+          pip install -q openai >/dev/null 2>&1
+          python - <<'PY'
+          import os, httpx
+          from openai import OpenAI
+          c = OpenAI(base_url=os.environ["BASE_URL"], api_key=os.environ["API_KEY"], http_client=httpx.Client(verify="/etc/ingress-ca/ca.crt"))
+          r = c.chat.completions.create(model="{model_name}", messages=[{"role": "user", "content": "Name one benefit of an internal model service."}], max_tokens=60)
+          print("ANSWER:", r.choices[0].message.content.strip())
+          print("USAGE:", r.usage.prompt_tokens, "prompt +", r.usage.completion_tokens, "completion tokens")
+          PY
+      volumes: [{name: ingress-ca, configMap: {name: ingress-ca}}]
+EOF
+oc wait job/maas-client -n {model_namespace} --for=condition=Complete --timeout=300s
+oc logs job/maas-client -n {model_namespace} | grep -E 'ANSWER|USAGE'
+----
+
+Expected result: `condition met`, then an `ANSWER:` line and a `USAGE:` line with token counts. The
+application never saw an OpenShift token, a GPU or a Kubernetes object: only a URL, a key and the
+CA to trust.
+
+== Evidence checkpoint
+
+Before continuing, verify that you can answer:
+
+* Which object lives next to the model, and which live in `{maas_namespace}`, and why?
+* What happened, step by step, when the sixth bronze request returned 429?
+* Where does the `subscription` label on `authorized_hits` come from?
+* What does an application need to consume a MaaS model?
+
+.Answer key
+[%collapsible]
+====
+* `MaaSModelRef` lives in the model's project and points at the model; `MaaSSubscription` and
+  `MaaSAuthPolicy` live in `{maas_namespace}`, the only namespace maas-api reads them from.
+* The gateway asked Authorino to authenticate the key (valid, subscription `granite-bronze`), then
+  asked Limitador to admit the request; the subscription's 300-token budget for the minute was
+  already spent by the first five responses, so Limitador refused and the gateway returned 429
+  without calling vLLM.
+* From the TelemetryPolicy: it labels Limitador's counters with `auth.identity.selected_subscription`,
+  the subscription Authorino resolved for the key.
+* The base URL (`https://maas.<domain>/<project>/<model>/v1`), the model name and an API key.
+====
+
+Day 2 ends here. Leave everything running for Day 3, which builds on the MaaS endpoint.

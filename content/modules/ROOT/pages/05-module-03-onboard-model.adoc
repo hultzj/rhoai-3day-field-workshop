@@ -126,8 +126,15 @@ spec:
 <3> *rest* — expose the REST API.
 <4> *kubeRBACProxy* — put the REST API behind OpenShift authentication and RBAC, and create a Route.
 
+From here on, commands send your OpenShift token (a cluster-admin credential) to cluster
+endpoints, so they verify the server first: the block saves the CA that signs the cluster's ingress
+certificate and points `curl` at it with `CURL_CA_BUNDLE`. No command in this workshop uses `curl -k`
+with a token or key.
+
 [source,bash,role="execute",subs="attributes+"]
 ----
+oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+export CURL_CA_BUNDLE=~/ingress-ca.crt
 oc apply -f - <<'EOF'
 apiVersion: modelregistry.opendatahub.io/v1beta1
 kind: ModelRegistry
@@ -145,7 +152,7 @@ REGISTRY=https://$(oc get route {registry_name}-https -n {registry_namespace} -o
 echo "$REGISTRY"
 ----
 
-Expected result: `modelregistry.modelregistry.opendatahub.io/{registry_name} condition met`, and
+Expected result: `~/ingress-ca.crt` is written, `modelregistry.modelregistry.opendatahub.io/{registry_name} condition met`, and
 the registry URL `https://{registry_name}-rest.{cluster_domain}/api/model_registry/v1alpha3`.
 
 == Exercise 3: Record the model, its version and its artifact
@@ -154,7 +161,7 @@ First the negative control: the registry must refuse an anonymous caller.
 
 [source,bash,role="execute"]
 ----
-curl -sk -o /dev/null -w 'anonymous: %{http_code}\n' "$REGISTRY/registered_models"
+curl -s -o /dev/null -w 'anonymous: %{http_code}\n' "$REGISTRY/registered_models"
 ----
 
 Expected result: `anonymous: 401`. The kube-rbac-proxy rejects requests without a token.
@@ -165,7 +172,7 @@ created only if a lookup by name finds none, so the block is safe to run again:
 [source,bash,role="execute",subs="attributes+"]
 ----
 AUTH="Authorization: Bearer $(oc whoami -t)"
-reg() { curl -sk -H "$AUTH" -H 'Content-Type: application/json' "$@"; }
+reg() { curl -s -H "$AUTH" -H 'Content-Type: application/json' "$@"; }
 RM_ID=$(reg "$REGISTRY/registered_model?name=granite-4.0-h-tiny-fp8" | jq -r '.id // empty')
 [ -n "$RM_ID" ] || RM_ID=$(reg -X POST "$REGISTRY/registered_models" \
   -d "{\"name\":\"granite-4.0-h-tiny-fp8\",\"description\":\"{model_display}, Red Hat validated\",\"owner\":\"$(oc whoami)\"}" | jq -r .id)
@@ -391,9 +398,9 @@ Three callers: nobody, a ServiceAccount with no rights, and you.
 ----
 URL=$(oc get isvc {model_name} -n {model_namespace} -o jsonpath='{.status.url}')
 oc create sa no-rights -n {model_namespace} --dry-run=client -o yaml | oc apply -f - >/dev/null
-curl -sk -o /dev/null -w 'anonymous:          %\{http_code}\n' "$URL/v1/models"
-curl -sk -o /dev/null -w 'SA without RBAC:    %\{http_code}\n' -H "Authorization: Bearer $(oc create token no-rights -n {model_namespace})" "$URL/v1/models"
-curl -sk -o /dev/null -w 'you (cluster-admin): %\{http_code}\n' -H "Authorization: Bearer $(oc whoami -t)" "$URL/v1/models"
+curl -s -o /dev/null -w 'anonymous:          %\{http_code}\n' "$URL/v1/models"
+curl -s -o /dev/null -w 'SA without RBAC:    %\{http_code}\n' -H "Authorization: Bearer $(oc create token no-rights -n {model_namespace})" "$URL/v1/models"
+curl -s -o /dev/null -w 'you (cluster-admin): %\{http_code}\n' -H "Authorization: Bearer $(oc whoami -t)" "$URL/v1/models"
 ----
 
 Expected result: `anonymous: 401`, `SA without RBAC: 403`, `you (cluster-admin): 200`. 401 means
@@ -404,7 +411,7 @@ Now ask the model something, with a tool it may decide to call:
 
 [source,bash,role="execute",subs="attributes+"]
 ----
-curl -sk "$URL/v1/chat/completions" -H "Authorization: Bearer $(oc whoami -t)" -H 'Content-Type: application/json' -d '{
+curl -s "$URL/v1/chat/completions" -H "Authorization: Bearer $(oc whoami -t)" -H 'Content-Type: application/json' -d '{
   "model": "{model_name}",
   "messages": [{"role": "user", "content": "What is the weather in Seoul right now?"}],
   "tools": [{"type": "function", "function": {"name": "get_weather", "description": "Current weather for a city",
