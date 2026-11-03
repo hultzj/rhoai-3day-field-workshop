@@ -150,6 +150,54 @@ with Expected results, a negative control or break-and-restore, evidence checkpo
   replica's `vllm:prefix_cache_hits_total` rose to 4096 (first request misses, the next four hit).
   Metrics: `oc exec <pod> -c main -- curl -sk https://localhost:8000/metrics`.
 
+## MaaS spike (2026-11-03, as `kuro`) for Modules 5-6
+
+Module 5 (stand up), in order, all verified:
+1. Secrets `postgres-creds` (`POSTGRESQL_USER/PASSWORD/DATABASE=maas`) and `maas-db-config`
+   (`DB_CONNECTION_URL=postgresql://maas:<pw>@postgres:5432/maas?sslmode=disable`) in
+   `redhat-ods-applications` (password from `openssl rand -hex 16`, never in git), then PostgreSQL:
+   `registry.redhat.io/rhel9/postgresql-15@sha256:24320a40760f17f867aa1d05f0f82268008ac537f502de83a2b477c19bc3e2ad`,
+   5Gi PVC, Service `postgres`.
+2. `Kuadrant` `kuadrant` in `kuadrant-system` (`observability.enable: true`) -> Authorino + Limitador
+   pods, Ready in ~20 s. This flips Module 4's AuthPolicy to `Enforced=True` - but every call
+   returns **500** (wasm: `gRPC status code is not OK`): OpenShift AI's EnvoyFilter
+   `openshift-ai-inference-authn-ssl` calls Authorino :50051 over TLS (trusting the service CA)
+   while the Authorino listener has TLS off. Fix (3.5; the 3.4 source lab said the opposite):
+   annotate Service `authorino-authorino-authorization`
+   `service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert`, patch Authorino
+   `spec.listener.tls: {enabled: true, certSecretRef: {name: authorino-server-cert}}` -> llm-d
+   endpoint: anonymous 401, token 200, bad token 401. The 3.4 Authorino service-CA trust volume patch
+   was not needed.
+3. Gateway `maas-default-gateway` (`openshift-ingress`, labels `kuadrant.io/gateway: "true"`,
+   `opendatahub.io/managed: "false"`, annotation `security.opendatahub.io/authorino-tls-bootstrap`)
+   on `data-science-gateway-class`, listener `hostname: maas.<domain>`, cert `router-certs-default`,
+   **LoadBalancer** (no parametersRef): on AWS it gets an ELB, and the ingress operator publishes a
+   DNSRecord `maas.<domain>` -> ELB automatically. No svc-status patch, no hostAliases (the source
+   lab's unsupported workarounds are only for clusters without a LB). (Laptop DNS lagged; tested with
+   `curl --resolve`.)
+4. DSC `aigateway: {managementState: Managed, modelsAsAService: {managementState: Managed}}` ->
+   `AIGatewayReady=True`; `maas-controller` (redhat-ods-applications), `maas-api`
+   (`redhat-ai-gateway-infra`), namespace `models-as-a-service`, AuthPolicy `maas-gateway-auth`.
+   `GET https://maas.<domain>/maas-api/v1/models`: anonymous 401, token 200 `{"data":[]}`.
+5. User-workload monitoring was off: `cluster-monitoring-config` `enableUserWorkload: true`.
+   TelemetryPolicy `maas-telemetry` on the gateway (labels model/user/subscription/org/cost centre).
+
+Module 6 (publish, govern, consume), verified:
+- Recreate the `LLMInferenceService` with `router.gateway.refs: [maas-default-gateway]` and
+  `--enable-force-include-usage` (recreate, not patch: a rolling update needs a third vLLM on the GPU).
+  URL `https://maas.<domain>/ws-models/granite4-tiny`.
+- `MaaSModelRef granite4-tiny` (ws-models): `Ready`, `GovernanceAttached` ("Active governance
+  pairing found"). `MaaSSubscription granite-gold` (20000 tokens/1m) and `granite-bronze` (300/1m),
+  owner group `system:authenticated:oauth`, `tokenMetadata` set; `MaaSAuthPolicy granite-access`.
+  All in `models-as-a-service`.
+- `POST /maas-api/v1/api-keys {name, expiresIn: 2h, subscription}` -> `sk-oai-…` per tier.
+  `/maas-api/v1/models` with a key lists `publishers/ws-models/models/granite4-tiny`.
+- Path routing `POST /ws-models/granite4-tiny/v1/chat/completions` with key -> 200 + usage; no key 401.
+- Same 12-request burst: bronze `200 x5 then 429 x7`; gold `200 x12`.
+- Prometheus (thanos-querier): `sum by (subscription,user)(authorized_hits)` ->
+  `granite-gold/kuro 378` tokens; `limited_calls` 7; `authorized_calls` by subscription;
+  `vllm:generation_tokens_total`. Labels only on traffic after the TelemetryPolicy existed.
+
 ## MLflow spike (2026-11-02, as `kuro`) for Module 7
 
 - DSC `spec.components.mlflowoperator.managementState: Managed` -> `MLflowOperatorReady=True` in
