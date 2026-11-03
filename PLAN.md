@@ -126,6 +126,30 @@ Working document. Not rendered by Antora.
 Each module follows the skill's template (why, glossary, technical context, objectives, exercises
 with Expected results, a negative control or break-and-restore, evidence checkpoint).
 
+## llm-d spike (2026-11-03, as `kuro`) for Module 4
+
+- `llmisvc-controller-manager` restarted (cluster owner OK) -> AuthPolicy precondition passes.
+- `LLMInferenceService` v1alpha2 `granite4-tiny` in `ws-models`, 2 replicas on standalone claim
+  `shared-l4`, `router: {gateway: {}, route: {}, scheduler: {}}`: first fails `RefsInvalid: Managed
+  HTTPRoute references non-existent Gateway openshift-ingress/openshift-ai-inference`. Participant
+  creates that Gateway with the cluster's existing pattern: ConfigMap `openshift-ai-inference-config`
+  (ClusterIP Service + service-CA serving cert `openshift-ai-inference-tls`), Gateway on
+  `data-science-gateway-class` (HTTPS 443, `allowedRoutes: All`), reencrypt Route
+  `inference.<domain>` -> Service `openshift-ai-inference-data-science-gateway-class`. Then Ready in
+  ~3 min: 2 vLLM pods, `granite4-tiny-kserve-router-scheduler` (EPP), InferencePool
+  `granite4-tiny-inference-pool`, HTTPRoute `granite4-tiny-kserve-route`; URL
+  `https://inference.<domain>/ws-models/granite4-tiny`; served names `granite4-tiny` and
+  `publishers/ws-models/models/granite4-tiny`.
+- KServe creates AuthPolicy `openshift-ai-inference-authn` on the Gateway, but with no Kuadrant
+  instance it is `Enforced=False MissingResource: kuadrant is not installed`; anonymous calls get 200.
+  Module 5's Kuadrant CR should flip this (verify).
+- EPP config (from its args): scorers queue 2, kv-cache-utilization 2, prefix-cache 3, no-hit-lru 2,
+  max-score-picker; approximate prefix matching (block 64 tokens after override).
+- Routing evidence: 5 requests with ~1.5k-token system prompt "alpha" and 5 with "beta": each prefix
+  family landed entirely on one replica (per-pod `vllm:request_success_total` +5 each), and each
+  replica's `vllm:prefix_cache_hits_total` rose to 4096 (first request misses, the next four hit).
+  Metrics: `oc exec <pod> -c main -- curl -sk https://localhost:8000/metrics`.
+
 ## MLflow spike (2026-11-02, as `kuro`) for Module 7
 
 - DSC `spec.components.mlflowoperator.managementState: Managed` -> `MLflowOperatorReady=True` in
