@@ -193,10 +193,10 @@ export CURL_CA_BUNDLE=~/ingress-ca.crt
 DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}'); MAAS=https://maas.$DOMAIN
 for tier in gold bronze; do
   resp=$(curl -s -X POST "$MAAS/maas-api/v1/api-keys" -H "Authorization: Bearer $(oc whoami -t)" -H 'Content-Type: application/json' \
-    -d "{\"name\":\"workshop-$tier\",\"expiresIn\":\"8h\",\"subscription\":\"granite-$tier\"}")
+    -d "{\"name\":\"workshop-$tier\",\"expiresIn\":\"72h\",\"subscription\":\"granite-$tier\"}")
   key=$(jq -r '.key // empty' <<<"$resp" 2>/dev/null)
   case "$key" in
-    sk-oai-*) printf '%s' "$key" > ~/key-$tier; echo "$tier key: $(cut -c1-10 ~/key-$tier)…" ;;
+    sk-oai-*) printf '%s' "$key" > ~/key-$tier; echo "$tier key: $(cut -c1-10 ~/key-$tier)…, expires $(jq -r '.expiresAt // "?"' <<<"$resp")" ;;
     *) echo "$tier: minting failed, existing key kept: $resp" ;;
   esac
 done
@@ -209,7 +209,8 @@ curl -s -o /dev/null -w 'no key: %\{http_code}\n' "$CHAT" -H 'Content-Type: appl
   -d '{"model": "{model_name}", "messages": [{"role": "user", "content": "hi"}]}'
 ----
 
-Expected result: two keys starting `sk-oai-`; the model list shows
+Expected result: two keys starting `sk-oai-`, each expiring 72 hours from now (`expiresIn: 72h`, so they
+last until Day 3); the model list shows
 `publishers/{model_namespace}/models/{model_name}`; the chat call answers with a `usage` block
 (prompt and completion tokens); and `no key: 401`. The keys are stored in your Web Terminal's home
 directory; maas-api never shows them again. A failed mint prints `minting failed` and keeps any key

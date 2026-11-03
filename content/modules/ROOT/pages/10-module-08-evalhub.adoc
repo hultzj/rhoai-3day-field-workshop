@@ -1,0 +1,203 @@
+= Module 8: Evaluate with EvalHub
+:navtitle: Module 8: Evaluate with EvalHub
+
+On Day 1 the model confidently gave a wrong answer about Kubernetes. Every customer eventually asks
+_how good is this model for us, and how do we know when it gets worse?_ Answering that with a few
+hand-typed prompts is anecdote. An evaluation runs a fixed, labelled benchmark against the model,
+the same way every time, and reports a score with its uncertainty.
+
+In this module you deploy EvalHub, OpenShift AI's evaluation service, see what it can run, evaluate
+your MaaS model on a standard benchmark through its API key, and read what the score does and does
+not tell you.
+
+.New to model evaluation?
+[%collapsible]
+====
+* *EvalHub* — OpenShift AI's evaluation orchestrator: a REST API that runs benchmark jobs against a
+  model endpoint and keeps their results.
+* *Provider* — an evaluation framework EvalHub can run, for example `lm_evaluation_harness`
+  (academic benchmarks) or `garak` (security probes).
+* *Benchmark* — a labelled task; `arc_easy` is a set of grade-school science multiple-choice questions.
+* *acc / acc_norm* — the share of questions answered correctly; `acc_norm` normalises for answer length.
+* *Standard error* — how much the score would move with a different sample of questions; with 50
+  questions it is large.
+====
+
+== Technical context
+
+EvalHub is one `EvalHub` resource per namespace. You submit an evaluation as a JSON job to its REST
+API (there is no CR per job). For every benchmark in the job, EvalHub starts a Kubernetes Job whose
+adapter (here, the LM Evaluation Harness) sends the benchmark's questions to the model URL and
+scores the answers. The job's sidecar adds the model's credentials from a Secret you name in the
+request (`model.auth.secret_ref`): an `api-key` for MaaS and a `ca_cert` to trust its gateway.
+
+Because the model is behind MaaS, the evaluation's own tokens are charged to the subscription its
+key belongs to, like any other consumer's.
+
+== Learning objectives
+
+* Deploy EvalHub and explore its providers and benchmarks through its API.
+* Run a benchmark against a MaaS-published model with an API key held in a Secret.
+* Read a score together with its standard error, and explain what it does not prove.
+* Show that a wrong key makes the evaluation fail visibly, not silently.
+
+== Exercise 1: Deploy EvalHub
+
+[source,yaml]
+----
+kind: EvalHub
+spec:
+  tenancy: single                          # <1>
+  database: {type: sqlite}                 # <2>
+  providers: [lm-evaluation-harness, garak]   # <3>
+----
+<1> *tenancy: single* — serve only this namespace (`multi` serves every namespace labelled as a tenant).
+<2> *database* — required; SQLite keeps results in the pod (lost on restart), PostgreSQL keeps them.
+<3> *providers* — which evaluation frameworks to offer.
+
+[source,bash,role="execute"]
+----
+oc new-project ws-eval >/dev/null 2>&1 || oc project ws-eval
+oc apply -n ws-eval -f - <<'EOF'
+apiVersion: trustyai.opendatahub.io/v1
+kind: EvalHub
+metadata:
+  name: evalhub
+spec:
+  tenancy: single
+  database:
+    type: sqlite
+  providers: [lm-evaluation-harness, garak]
+EOF
+until [ "$(oc get evalhub evalhub -n ws-eval -o jsonpath='{.status.phase}')" = Ready ]; do sleep 5; done
+oc get evalhub evalhub -n ws-eval -o jsonpath='phase {.status.phase}, providers {.status.activeProviders}{"\n"}'
+oc get sa -n ws-eval | grep evalhub
+----
+
+Expected result: within about 20 seconds, `phase Ready, providers ["lm-evaluation-harness","garak"]`,
+and two ServiceAccounts: `evalhub-service` (the API server) and `evalhub-ws-eval-job` (the identity
+evaluation jobs run as).
+
+== Exercise 2: What can it run?
+
+[source,bash,role="execute"]
+----
+oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+export CURL_CA_BUNDLE=~/ingress-ca.crt
+EH=https://$(oc get route evalhub -n ws-eval -o jsonpath='{.spec.host}')
+H=(-H "Authorization: Bearer $(oc whoami -t)" -H "X-Tenant: ws-eval")
+curl -s -o /dev/null -w 'health (no token): %{http_code}\n' "$EH/api/v1/health"
+curl -s -o /dev/null -w 'jobs   (no token): %{http_code}\n' "$EH/api/v1/evaluations/jobs"
+curl -s "${H[@]}" "$EH/api/v1/evaluations/providers" | jq -r '.items[] | "\(.resource.id): \(.benchmarks | length) benchmarks"'
+curl -s "${H[@]}" "$EH/api/v1/evaluations/providers" | jq -r '.items[] | select(.resource.id == "lm_evaluation_harness") | .benchmarks[] | select(.id == "arc_easy") | {id, description}'
+----
+
+Expected result: `health (no token): 200` and `jobs (no token): 401`; `lm_evaluation_harness: 188
+benchmarks` and `garak: 9 benchmarks`; and the `arc_easy` entry, described as "Grade-school science
+questions testing basic reasoning and scientific knowledge (AI2 Reasoning Challenge, easy split)."
+
+== Exercise 3: Evaluate the MaaS model
+
+The job's credentials live in a Secret: the gold API key, and the CA that signs the MaaS gateway's
+certificate.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc create secret generic maas-model -n ws-eval --from-literal=api-key="$(cat ~/key-gold)" \
+  --from-file=ca_cert=$HOME/ingress-ca.crt --dry-run=client -o yaml | oc apply -f -
+MAAS_URL=https://maas.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')/{model_namespace}/{model_name}/v1
+submit() {  # submit <job name> <secret>
+  jq -n --arg n "$1" --arg u "$MAAS_URL" --arg s "$2" '{name: $n,
+    model: {url: $u, name: "{model_name}", auth: {secret_ref: $s}},
+    benchmarks: [{id: "arc_easy", provider_id: "lm_evaluation_harness",
+      parameters: {num_examples: 50, num_few_shot: 0, tokenizer: "ibm-granite/granite-4.0-h-tiny"}}]}' |
+  curl -s "${H[@]}" -H 'Content-Type: application/json' -X POST "$EH/api/v1/evaluations/jobs" -d @- > ~/eval-submit.json
+  jq -er '.resource.id // empty' ~/eval-submit.json || { echo "submission refused: $(cat ~/eval-submit.json)" >&2; return 1; }
+}
+await() {  # await <job id>: poll until the job ends, then print state and results
+  [ -n "$1" ] || { echo "no job id: the submission failed" >&2; return 1; }
+  for i in $(seq 1 90); do   # at most 15 minutes
+    state=$(curl -s "${H[@]}" "$EH/api/v1/evaluations/jobs/$1" | jq -r '.status.state // "unknown"' 2>/dev/null)
+    case "$state" in
+      completed|failed|cancelled|partially_failed) break ;;
+      pending|running) sleep 10 ;;
+      *) echo "job $1 not readable (state: $state); is it deleted, or is your token expired?" >&2; return 1 ;;
+    esac
+  done
+  case "$state" in completed|failed|cancelled|partially_failed) ;; *) echo "job $1 still $state after 15 minutes" >&2; return 1 ;; esac
+  curl -s "${H[@]}" "$EH/api/v1/evaluations/jobs/$1" | jq '{state: .status.state, error: .status.benchmarks[0].error_message.message,
+    metrics: .results.benchmarks[0].metrics, test: .results.test}'
+}
+Q=https://$(oc get route thanos-querier -n openshift-monitoring -o jsonpath='{.spec.host}')/api/v1/query
+gold_tokens() { curl -s -G -H "Authorization: Bearer $(oc whoami -t)" "$Q" \
+  --data-urlencode 'query=sum(authorized_hits{subscription="granite-gold"})' | jq -r '.data.result[0].value[1] // "0"'; }
+GOLD_BEFORE=$(gold_tokens); echo "gold tokens before: $GOLD_BEFORE"
+JOB=$(submit granite-arc-easy maas-model) && echo "job $JOB"
+oc get jobs -n ws-eval
+await "$JOB"
+----
+
+Expected result: the gold subscription's token count so far, a job ID, a Kubernetes Job in `ws-eval` (`Running`), and after about two minutes
+`"state": "completed"`, `"error": null`, metrics `"acc": 0.56`, `"acc_norm": 0.56`,
+`"acc_stderr": 0.0709…`, and a `test` block `{"score": 0.56, "threshold": 0.5, "pass": true}`.
+
+What the numbers mean: the model answered about 56% of 50 easy science questions correctly, with a
+standard error of about 7 points, so a rerun on another 50 questions could plausibly score anywhere
+from about 0.42 to 0.70. The same benchmark against the internal endpoint on the test cluster scored
+0.60: the same model, inside that uncertainty. The `test` verdict compares the score with a default
+threshold of 0.5; it is a gate you would set for your use case, not a quality certificate.
+
+== Exercise 4: A wrong key (negative control)
+
+[source,bash,role="execute"]
+----
+oc create secret generic maas-model-bad -n ws-eval --from-literal=api-key=sk-oai-not-a-real-key \
+  --from-file=ca_cert=$HOME/ingress-ca.crt --dry-run=client -o yaml | oc apply -f -
+BAD=$(submit granite-arc-easy-badkey maas-model-bad) && await "$BAD"
+----
+
+Expected result: `"state": "failed"`, `"error": "Model endpoint returned HTTP 403: 403 Client Error:
+Forbidden for url: https://maas.…/{model_namespace}/{model_name}/v1/completions"`, and no metrics.
+MaaS refuses a key it does not know with 403 (a request with no key at all gets 401). The evaluation
+fails loudly instead of reporting a score.
+
+== Exercise 5: The evaluation is a MaaS consumer too
+
+Compare the gold subscription's tokens with the count taken just before the evaluation. Prometheus
+scrapes every 30 seconds or so, so the loop waits for the new value:
+
+[source,bash,role="execute"]
+----
+for i in $(seq 1 12); do [ "$(gold_tokens)" != "$GOLD_BEFORE" ] && break; sleep 15; done   # at most 3 minutes
+echo "gold tokens: before $GOLD_BEFORE, now $(gold_tokens), charged by the evaluation: $(( $(gold_tokens | cut -d. -f1) - ${GOLD_BEFORE%%.*} ))"
+----
+
+Expected result: `gold tokens: before …, now …, charged by the evaluation: …` with roughly 6,000 tokens
+charged (6,314 on the test cluster): the 50 benchmark questions, sent as
+completions with their answer choices, were charged to the gold subscription like any other
+consumer. (The wrong-key run used no tokens: MaaS refused it before the model.)
+
+== Evidence checkpoint
+
+Before continuing, verify that you can answer:
+
+* How is an evaluation submitted to EvalHub, and what actually runs it?
+* How did the evaluation authenticate to the model, and where did those credentials live?
+* What does `acc 0.56 ± 0.07` on 50 questions allow you to claim, and what not?
+* Why is it useful that a wrong key makes the job fail?
+
+.Answer key
+[%collapsible]
+====
+* As JSON to `POST /api/v1/evaluations/jobs` (with a token and the `X-Tenant` header); EvalHub starts
+  a Kubernetes Job per benchmark in which the provider's adapter queries the model and scores it.
+* The job's sidecar read the Secret named in `model.auth.secret_ref`: `api-key` (the gold MaaS key)
+  for the `Authorization` header and `ca_cert` to verify the gateway.
+* That on this sample the model answers roughly half to two thirds of easy science questions
+  correctly. Not that it is accurate for your domain, safe, or better than another model whose score
+  differs by less than the standard error.
+* A silent fallback would produce a score for something other than the model, or none at all,
+  without anyone noticing; a failed job is visible and alertable.
+====
+
+Proceed to xref:11-module-09-guardrails.adoc[Module 9: Guard it with NeMo Guardrails].

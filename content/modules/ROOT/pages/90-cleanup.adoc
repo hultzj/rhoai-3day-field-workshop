@@ -19,6 +19,34 @@ Expected result: whichever exist of: projects `{gpu_namespace}` and `{model_name
 the `{registry_name}` registry (`AVAILABLE True`), `gpucluster.nvidia.com/gpu-cluster` and
 `nvidiadriver.nvidia.com/gpu-driver` (`ready`), and `nfd-instance`.
 
+If you did Day 3, remove its projects and MLflow first. Look first:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get project ws-agent ws-eval ws-guard --ignore-not-found
+oc get mlflows.mlflow.opendatahub.io --ignore-not-found
+oc get networkpolicy -n {model_namespace} --ignore-not-found
+----
+
+Expected result: whichever exist of: the projects `ws-agent`, `ws-eval` and `ws-guard` (`Active`),
+the `mlflow` tracking server (`AVAILABLE True`, version `3.14.0`), and the NetworkPolicy
+`{model_name}-ingress`.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc delete project ws-agent ws-eval ws-guard --ignore-not-found --wait=true
+oc delete networkpolicy {model_name}-ingress -n {model_namespace} --ignore-not-found
+oc delete mlflows.mlflow.opendatahub.io mlflow --ignore-not-found --wait=true
+oc patch datasciencecluster default-dsc --type merge -p '{"spec":{"components":{"mlflowoperator":{"managementState":"Removed"}}}}'
+rm -f ~/labelled.tsv
+oc get project ws-agent ws-eval ws-guard --ignore-not-found
+----
+
+Expected result: the projects, the NetworkPolicy and the tracking server are deleted. Evaluation
+results go with the `ws-eval` project; traces do not go with `ws-agent` (MLflow stores them on its
+own volume, keyed by workspace name) but with the tracking server and its volume, `default-dsc patched` sets MLflow back to `Removed` (its pods and
+volume disappear within a minute), and the last command prints nothing.
+
 If you did Day 2, remove its pieces first, in the reverse order you built them (keys, then the
 service, then the platform). Look first:
 

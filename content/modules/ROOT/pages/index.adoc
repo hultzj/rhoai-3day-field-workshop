@@ -104,9 +104,6 @@ xref:92-facilitator-guide.adoc[Facilitator Guide].
 
 *Total:* about 6.7 hours of labs over three days.
 
-NOTE: This guide is being built day by day. Days 1 and 2 (Modules 1-6) are available now; Day 3
-follows.
-
 == Technical model
 
 * *GPU layer:* the NVIDIA driver makes the GPU work on the node; the NVIDIA DRA driver publishes it

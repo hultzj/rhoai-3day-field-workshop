@@ -15,9 +15,9 @@ One dedicated cluster per participant (15-20 for a full class). Each needs:
 | DRA's stable API, `resource.k8s.io/v1`, which every Module 2 manifest uses, is served from Kubernetes 1.34; Argo CD installs the workshop operators and the Showroom guide
 | `oc get --raw /apis/resource.k8s.io/v1 >/dev/null && echo ok`; `oc get csv -n openshift-gitops-operator`
 
-| OpenShift AI {rhoai_version}, DataScienceCluster with `kserve`, `modelregistry` and `dashboard` Managed
-| Modules 3 onwards
-| `oc get datasciencecluster -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}'` prints `True`
+| OpenShift AI {rhoai_version}, DataScienceCluster with `kserve`, `modelregistry`, `dashboard` and `trustyai` Managed
+| Modules 3 onwards (`trustyai` provides EvalHub and NeMo Guardrails for Day 3)
+| `oc get datasciencecluster -o jsonpath='{.items[0].status.conditions[?(@.type=="TrustyAIReady")].status}'` prints `True` (and `Ready` likewise)
 
 | One GPU node: AWS `g6.2xlarge` (1x NVIDIA L4 24 GB), tainted `nvidia.com/gpu=True:NoSchedule`, 200 GB root disk
 | all GPU work; two model replicas share this one GPU on Day 2
@@ -89,6 +89,10 @@ Every line must print `PASS`. Fix any `FAIL` before participants arrive.
   (80 min) in 3:45-5:15. Each model recreate takes about three minutes. Module 5 Exercise 2 ends in
   HTTP 500 on purpose; Exercise 3 diagnoses and fixes it.
 
+* Day 3: Module 7 (45 min) runs in the 1:15-2:00 slot, Module 8 (30 min) in 2:00-2:30, Module 9
+  (50 min) in 3:10-4:00. The agent and evaluation jobs `pip install` packages and download a
+  benchmark from the internet: the cluster needs egress to PyPI and Hugging Face.
+
 == Known issues
 
 * *RHCL installed after OpenShift AI.* KServe's `llmisvc-controller-manager` checks for the
@@ -96,6 +100,14 @@ Every line must print `PASS`. Fix any `FAIL` before participants arrive.
   `GatewayPreconditionNotMet: AuthPolicy CRD is not available` until that controller restarts:
   `oc rollout restart deployment/llmisvc-controller-manager -n redhat-ods-applications`.
   Install the workshop operators before class so this happens once, by you.
+* *Model registry operator restart loop.* On a busy cluster the `model-registry-operator-controller-manager`
+  can settle at about 210Mi, too close to its 256Mi limit: it stalls, misses its 1-second liveness
+  probe and restarts every couple of minutes, and the DataScienceCluster reports `ModelRegistryReady=False`
+  (`make verify` fails its DSC check). Raise its memory, which OpenShift AI preserves while the
+  Deployment has no `opendatahub.io/managed: true` annotation (_Managing OpenShift AI_, "Customizing
+  component deployment resources"):
+  `oc set resources deployment/model-registry-operator-controller-manager -n redhat-ods-applications -c manager --requests=cpu=100m,memory=512Mi --limits=memory=512Mi`.
+  To return to the defaults, add the annotation `opendatahub.io/managed=true` to the Deployment.
 * *DNS for `maas.<domain>`.* The ingress operator publishes the record within seconds and the Web
   Terminal resolves it at once; laptops with cached negative answers may need several minutes.
 * *User-workload monitoring.* Module 5 enables it. If the cluster already has a

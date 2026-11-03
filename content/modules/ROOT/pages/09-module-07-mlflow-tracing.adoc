@@ -1,0 +1,330 @@
+= Module 7: Trace an agent with MLflow
+:navtitle: Module 7: Trace an agent with MLflow
+
+An agent is a loop: the model decides to call a tool, the code runs it, the result goes back to the
+model, and so on until it answers. When the answer is wrong or slow, a log line saying "200 OK" is
+useless. You need to see each step: what the model was asked, which tool it chose and with which
+arguments, what came back, how many tokens each call cost and where the time went. The customer
+question: _when an agent misbehaves in production, how do we see what it actually did?_
+
+In this module you enable MLflow on OpenShift AI, give an agent an identity that may write traces
+and nothing else, and run a small tool-calling agent against your MaaS model. Then you read its
+trace span by span.
+
+.New to tracing?
+[%collapsible]
+====
+* *Trace* — the record of one request through an application: a tree of spans.
+* *Span* — one timed step inside a trace (an LLM call, a tool call, the agent loop itself), with its
+  inputs, outputs and attributes such as token counts.
+* *Autolog* — MLflow's instrumentation of a library (here the OpenAI SDK) so every call becomes a
+  span without changing the calling code.
+* *Experiment* — MLflow's container for runs and traces of one application.
+* *Workspace* — in OpenShift AI, MLflow's tenant boundary: one workspace per OpenShift project.
+====
+
+== Technical context
+
+[cols="1,3",options="header"]
+|===
+| Piece | Role
+
+| `mlflowoperator` in the DataScienceCluster
+| installs the MLflow operator and its `MLflow` resource type
+
+| `MLflow` CR (`mlflow`)
+| one tracking server for the cluster, deployed into `redhat-ods-applications`, here with SQLite on a
+  persistent volume; served at `https://rh-ai.{cluster_domain}/mlflow` and in-cluster at
+  `https://mlflow.redhat-ods-applications.svc:8443/mlflow`
+
+| Workspaces and RBAC
+| every request names a workspace (an OpenShift project); MLflow checks the caller's Kubernetes RBAC
+  on virtual `mlflow.kubeflow.org` resources (experiments, datasets, registered models) in that project
+
+| The agent
+| a Python job using the OpenAI SDK against MaaS with your gold key; `mlflow.openai.autolog()` traces
+  every model call, and `@mlflow.trace` marks the agent loop and the tool
+|===
+
+The agent authenticates to MaaS with an API key and to MLflow with its ServiceAccount token: two
+different identities, governed by two different systems.
+
+== Learning objectives
+
+* Enable MLflow and create a tracking server.
+* Explain how MLflow on OpenShift AI scopes data (workspaces) and authorizes callers (RBAC).
+* Show that an agent without MLflow rights cannot write traces, then grant exactly those rights.
+* Read an agent's trace: span types, the tool call's arguments and result, token usage and latency.
+
+== Exercise 1: Enable MLflow
+
+[source,bash,role="execute"]
+----
+oc patch datasciencecluster default-dsc --type merge \
+  -p '{"spec":{"components":{"mlflowoperator":{"managementState":"Managed"}}}}'
+until [ "$(oc get datasciencecluster default-dsc -o jsonpath='{.status.conditions[?(@.type=="MLflowOperatorReady")].status}')" = True ]; do sleep 5; done
+until oc get crd mlflows.mlflow.opendatahub.io >/dev/null 2>&1; do sleep 5; done
+oc apply -f - <<'EOF'
+apiVersion: mlflow.opendatahub.io/v1
+kind: MLflow
+metadata:
+  name: mlflow
+spec:
+  backendStoreUri: sqlite:////mlflow/mlflow.db
+  registryStoreUri: sqlite:////mlflow/mlflow.db
+  serveArtifacts: true
+  artifactsDestination: file:///mlflow/artifacts
+  storage:
+    accessModes: [ReadWriteOnce]
+    resources:
+      requests:
+        storage: 5Gi
+EOF
+oc wait mlflows.mlflow.opendatahub.io/mlflow --for=condition=Available --timeout=600s
+oc get mlflows.mlflow.opendatahub.io mlflow -o jsonpath='version {.status.version}, in-cluster {.status.address.url}{"\n"}'
+----
+
+Expected result: `default-dsc patched`, `mlflow.mlflow.opendatahub.io/mlflow created`, a database
+migration job runs, and then `condition met` and `version 3.14.0, in-cluster
+https://mlflow.redhat-ods-applications.svc:8443/mlflow`.
+
+== Exercise 2: How MLflow decides who sees what
+
+Ask the tracking API three ways: with no token, with your token but no workspace, and with both.
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+export CURL_CA_BUNDLE=~/ingress-ca.crt
+ML=https://rh-ai.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')/mlflow
+oc new-project ws-agent >/dev/null 2>&1 || oc project ws-agent
+curl -s -o /dev/null -w 'no token:            %\{http_code}\n' "$ML/api/2.0/mlflow/experiments/search?max_results=5"
+curl -s -w '\n' -H "Authorization: Bearer $(oc whoami -t)" "$ML/api/2.0/mlflow/experiments/search?max_results=5"
+curl -s -w '\n' -H "Authorization: Bearer $(oc whoami -t)" -H 'X-MLFLOW-WORKSPACE: ws-agent' "$ML/api/2.0/mlflow/experiments/search?max_results=5"
+----
+
+Expected result: `no token: 302` (a redirect to the OpenShift login); with a token but no workspace,
+`{"error":{"code":"INVALID_PARAMETER_VALUE","message":"Workspace context is required for this request."}}`;
+with the workspace `ws-agent`, `{}`: an empty workspace, which belongs to the project you just created.
+
+In short: an MLflow workspace is an OpenShift project, and MLflow asks Kubernetes who may use it.
+
+== Exercise 3: An agent without MLflow rights (negative control)
+
+The agent consumes MaaS with your gold key from Day 2. Check that it still works, and mint a new one
+if it expired or your terminal lost it (the Web Terminal's home directory does not survive a restart):
+
+[source,bash,role="execute",subs="attributes+"]
+----
+MAAS=https://maas.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
+code=$(curl -s -o /dev/null -w '%\{http_code}' -H "Authorization: Bearer $(cat ~/key-gold 2>/dev/null)" "$MAAS/maas-api/v1/models")
+if [ "$code" != 200 ]; then
+  echo "gold key not usable (HTTP $code): minting a new one"
+  resp=$(curl -s -X POST "$MAAS/maas-api/v1/api-keys" -H "Authorization: Bearer $(oc whoami -t)" -H 'Content-Type: application/json' \
+    -d '{"name":"workshop-gold-day3","expiresIn":"72h","subscription":"granite-gold"}')
+  key=$(jq -r '.key // empty' <<<"$resp")
+  case "$key" in sk-oai-*) printf '%s' "$key" > ~/key-gold ;; *) echo "minting failed: $resp" ;; esac
+fi
+curl -s -o /dev/null -w 'gold key: %\{http_code}\n' -H "Authorization: Bearer $(cat ~/key-gold)" "$MAAS/maas-api/v1/models"
+----
+
+Expected result: `gold key: 200` (preceded by `gold key not usable … minting a new one` if it had
+expired or was missing).
+
+Now give the agent an identity, the gold key and the ingress CA, and its code:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+oc create sa weather-agent -n ws-agent --dry-run=client -o yaml | oc apply -f -
+oc create secret generic maas-key -n ws-agent --from-literal=api-key="$(cat ~/key-gold)" --dry-run=client -o yaml | oc apply -f -
+oc create configmap ingress-ca -n ws-agent --from-file=ca.crt=$HOME/ingress-ca.crt --dry-run=client -o yaml | oc apply -f -
+oc create configmap weather-agent -n ws-agent --from-file=agent.py=/dev/stdin --dry-run=client -o yaml <<'PY' | oc apply -f -
+import json, os, httpx, mlflow
+from openai import OpenAI
+
+mlflow.set_tracking_uri("https://mlflow.redhat-ods-applications.svc:8443/mlflow")
+mlflow.set_experiment("weather-agent")
+mlflow.openai.autolog()
+
+client = OpenAI(base_url=os.environ["MAAS_URL"], api_key=os.environ["MAAS_KEY"],
+                http_client=httpx.Client(verify="/etc/ingress-ca/ca.crt"))
+TOOLS = [{"type": "function", "function": {"name": "get_weather", "description": "Current weather for a city",
+          "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}]
+
+@mlflow.trace(span_type="TOOL")
+def get_weather(city):
+    return {"city": city, "sky": "clear", "celsius": 14}   # stand-in for a real weather API
+
+@mlflow.trace(span_type="AGENT")
+def agent(question):
+    messages = [{"role": "user", "content": question}]
+    for _ in range(3):
+        m = client.chat.completions.create(model="{model_name}", messages=messages, tools=TOOLS, max_tokens=200).choices[0].message
+        if not m.tool_calls:
+            return m.content
+        messages.append(m.model_dump(exclude_none=True))
+        for tc in m.tool_calls:
+            messages.append({"role": "tool", "tool_call_id": tc.id,
+                             "content": json.dumps(get_weather(**json.loads(tc.function.arguments)))})
+    return "gave up"
+
+print("ANSWER:", agent("Should I bring a jacket in Seoul today?"))
+mlflow.flush_trace_async_logging()
+trace = mlflow.get_trace(mlflow.get_last_active_trace_id())
+print("TRACE", trace.info.trace_id, trace.info.state, f"{trace.info.execution_duration} ms")
+for s in trace.data.spans:
+    print(f"  SPAN {s.span_type:<10} {s.name:<14} {(s.end_time_ns - s.start_time_ns) // 1000000:>6} ms")
+print("TOKENS", trace.info.token_usage)
+PY
+----
+
+Expected result: the ServiceAccount, the Secret and the two ConfigMaps are created.
+
+Now run the agent as a Job. The ServiceAccount has no RoleBinding yet:
+
+[source,bash,role="execute",subs="attributes+"]
+----
+DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
+run_agent() {
+oc delete job weather-agent -n ws-agent --ignore-not-found --wait=true
+oc apply -n ws-agent -f - <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: weather-agent
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: weather-agent
+      restartPolicy: Never
+      containers:
+      - name: agent
+        image: image-registry.openshift-image-registry.svc:5000/redhat-ods-applications/s2i-minimal-notebook:{rhoai_version}
+        command: ["bash", "-c", "pip install -q 'mlflow==3.14.0' openai >/tmp/pip.log 2>&1 || { tail -5 /tmp/pip.log; exit 1; }; MLFLOW_TRACKING_TOKEN=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token) python /app/agent.py"]
+        env:
+        - {name: MLFLOW_WORKSPACE, value: ws-agent}
+        - {name: MLFLOW_TRACKING_SERVER_CERT_PATH, value: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt}
+        - {name: MAAS_URL, value: "https://maas.$DOMAIN/{model_namespace}/{model_name}/v1"}
+        - {name: MAAS_KEY, valueFrom: {secretKeyRef: {name: maas-key, key: api-key}}}
+        volumeMounts:
+        - {name: app, mountPath: /app}
+        - {name: ingress-ca, mountPath: /etc/ingress-ca}
+      volumes:
+      - {name: app, configMap: {name: weather-agent}}
+      - {name: ingress-ca, configMap: {name: ingress-ca}}
+EOF
+until [ -n "$(oc get job weather-agent -n ws-agent -o jsonpath='{.status.succeeded}{.status.failed}')" ]; do sleep 5; done
+oc logs job/weather-agent -n ws-agent | grep -E 'ANSWER|TRACE|SPAN|TOKENS|PERMISSION_DENIED|403|ERROR:' | cut -c1-200
+[ "$(oc get job weather-agent -n ws-agent -o jsonpath='{.status.succeeded}')" = 1 ] && echo "job: succeeded" || { echo "job: failed"; return 1; }
+}
+run_agent
+----
+
+Expected result: the job fails, and the log shows `mlflow.exceptions.RestException: … {'error':
+{'code': 'PERMISSION_DENIED', 'message': 'Permission denied for requested operation.'}}` when it
+tries to create the experiment: the agent's ServiceAccount
+may call MaaS (it holds a key) but has no right to write to the `ws-agent` workspace.
+
+== Exercise 4: Grant exactly the rights to trace, and run again
+
+OpenShift AI ships ClusterRoles for MLflow: `mlflow-operator-mlflow-view`, `-edit` and
+`-integration` (for applications that log experiments and traces). Bind the integration role in this
+project only:
+
+[source,bash,role="execute"]
+----
+oc get clusterrole mlflow-operator-mlflow-integration -o jsonpath='{range .rules[*]}{.resources}{" "}{.verbs}{"\n"}{end}' | head -3
+oc create rolebinding weather-agent-mlflow -n ws-agent \
+  --clusterrole=mlflow-operator-mlflow-integration --serviceaccount=ws-agent:weather-agent --dry-run=client -o yaml | oc apply -f -
+run_agent
+----
+
+Expected result: the first line shows `["datasets","experiments","registeredmodels"]` with
+`["get","list","create","update"]` (the role's other rules only read gateway endpoints and MCP
+servers); then the agent answers from the tool's result (clear sky, about 14 °C, bring a jacket) and
+prints a trace such as:
+
+[source,text]
+----
+TRACE tr-… OK 6313 ms
+  SPAN AGENT      agent            6313 ms
+  SPAN CHAT_MODEL Completions      2102 ms
+  SPAN TOOL       get_weather         0 ms
+  SPAN CHAT_MODEL Completions      4175 ms
+TOKENS {'input_tokens': 430, 'output_tokens': 81, 'total_tokens': 511}
+----
+
+The model's two calls take almost all the time; the tool is instant. Your numbers will differ.
+
+In short: the trace shows the agent's reasoning loop as data: ask, call a tool, answer.
+
+== Exercise 5: Read the trace back, from the API and in the dashboard
+
+The job printed the trace from its own process. Read it back from MLflow as another client would,
+through the same REST API the MLflow UI uses, in the `ws-agent` workspace:
+
+[source,bash,role="execute"]
+----
+H=(-H "Authorization: Bearer $(oc whoami -t)" -H 'X-MLFLOW-WORKSPACE: ws-agent')
+EXP=$(curl -s "${H[@]}" "$ML/api/2.0/mlflow/experiments/get-by-name?experiment_name=weather-agent" | jq -r .experiment.experiment_id)
+curl -s "${H[@]}" "$ML/api/2.0/mlflow/traces?experiment_ids=$EXP&max_results=5" \
+  | jq -r '.traces[] | "\(.request_id)  \(.status)  \(.execution_time_ms) ms  \([.tags[] | select(.key == "mlflow.traceName") | .value][0])"'
+----
+
+Expected result: one line per agent run (including runs from an earlier, deleted `ws-agent` project:
+traces live in MLflow's store, not in the project), the newest with the trace ID the job printed, `OK`, its
+duration in milliseconds and the trace name `agent`. The trace is stored in the cluster's MLflow,
+scoped to the `ws-agent` workspace.
+
+Now open the same trace in the OpenShift AI dashboard:
+
+. Open the dashboard (`https://rh-ai.{cluster_domain}`). If you enabled MLflow a moment ago, reload
+  the page once so the new menu entry appears.
+. In the left menu, open *Develop & train* → *Experiments*.
+. In the *Project* selector at the top, choose `ws-agent`. The experiment `weather-agent` is listed.
+. Open `weather-agent`, then the *Traces* tab.
+
+image::09-mlflow-traces.png[The Traces tab of the weather-agent experiment, one row with the question, the answer, 522 tokens, 6.503 s and state OK]
+
+Expected result: one row per run, with *Trace ID* `tr-…`, *Request* `{ "question": "Should I bring a
+jacket in Seoul today?" }`, the *Response*, *Tokens* (about 520), *Execution time* (about 6.5 s) and
+*State* `OK`.
+
+. Click the trace ID. The *Summary* tab shows *Status* `OK`, the *Token count* and *Latency*, the
+  question, the three steps *Completions was called*, *get_weather was called* and *Completions was
+  called* with their durations, and the answer.
+
+image::09-mlflow-trace-summary.png[The trace summary: status OK, token count 522, latency 6.50 s, two Completions calls with get_weather between them, and the final answer]
+
+. Open the *Details & Timeline* tab and select `get_weather` in the *Trace breakdown* tree.
+
+image::09-mlflow-tool-span.png[The Details and Timeline tab with get_weather selected: input city Seoul, outputs city Seoul, sky clear, celsius 14]
+
+Expected result: the *Trace breakdown* tree is `agent` → `Completions`, `get_weather`, `Completions`;
+the `get_weather` span's *Inputs / Outputs* show input `city: Seoul` and outputs `city: Seoul`,
+`sky: clear`, `celsius: 14`. You can see exactly which tool the model chose, with which argument, and
+what it got back, without adding a single log line to the agent.
+
+== Evidence checkpoint
+
+Before continuing, verify that you can answer:
+
+* What is an MLflow workspace on OpenShift AI, and what decides whether a caller may use it?
+* Why did the first run fail, although the agent could reach both MaaS and MLflow?
+* Which spans make up the agent's trace, and what does each record?
+* Which identity does the agent use for MaaS, and which for MLflow?
+
+.Answer key
+[%collapsible]
+====
+* An OpenShift project; MLflow checks the caller's Kubernetes RBAC on `mlflow.kubeflow.org`
+  resources (experiments, datasets, registered models) in that project.
+* Its ServiceAccount had no RoleBinding in `ws-agent`, so MLflow refused to create the experiment
+  (`PERMISSION_DENIED`).
+* `AGENT` (the whole loop), two `CHAT_MODEL` spans (the model calls, recorded by autolog with their
+  messages and token usage) and a `TOOL` span (`get_weather`, with its arguments and result).
+* A MaaS API key (gold subscription) for the model; its Kubernetes ServiceAccount token for MLflow.
+====
+
+Proceed to xref:10-module-08-evalhub.adoc[Module 8: Evaluate with EvalHub].

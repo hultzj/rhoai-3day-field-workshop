@@ -85,6 +85,9 @@ dsc_ready() {
 }
 check "DataScienceCluster Ready with KServe and Model Registry" dsc_ready
 check "DRA API resource.k8s.io/v1 is served (Kubernetes 1.34+)" oc get --raw /apis/resource.k8s.io/v1
+trustyai_ready() { [ "$(oc get datasciencecluster -o jsonpath='{.items[0].status.conditions[?(@.type=="TrustyAIReady")].status}')" = True ]; }
+check "TrustyAI Ready (EvalHub and NeMo Guardrails, Day 3)" trustyai_ready
+check "EvalHub and NemoGuardrails APIs present" oc get crd evalhubs.trustyai.opendatahub.io nemoguardrails.trustyai.opendatahub.io
 gpu_node() { oc get nodes -o custom-columns=T:.spec.taints[*].key,I:.metadata.labels.node\\.kubernetes\\.io/instance-type --no-headers | grep -q 'nvidia.com/gpu'; }
 check "a GPU node tainted nvidia.com/gpu exists" gpu_node
 no_cluster_policy() { out=$(oc get clusterpolicies.nvidia.com -o name --ignore-not-found) || return 1; [[ -z $out ]]; }

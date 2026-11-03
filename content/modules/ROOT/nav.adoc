@@ -12,6 +12,11 @@
 * xref:07-module-05-maas-standup.adoc[Module 5: Stand up MaaS]
 * xref:08-module-06-maas-govern.adoc[Module 6: Govern and consume MaaS]
 
+.Day 3: service to trusted application (125 minutes)
+* xref:09-module-07-mlflow-tracing.adoc[Module 7: Trace an agent with MLflow]
+* xref:10-module-08-evalhub.adoc[Module 8: Evaluate with EvalHub]
+* xref:11-module-09-guardrails.adoc[Module 9: Guard it with NeMo Guardrails]
+
 .Wrap-up
 * xref:90-cleanup.adoc[Cleanup]
 * xref:91-reference.adoc[Technical Reference]

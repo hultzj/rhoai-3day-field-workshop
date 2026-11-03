@@ -22,6 +22,15 @@
 | link:https://docs.redhat.com/en/documentation/red_hat_connectivity_link/[Red Hat Connectivity Link^]
 | Kuadrant, AuthPolicy, rate limiting with Authorino and Limitador, TelemetryPolicy
 
+| link:https://mlflow.org/docs/latest/genai/tracing/[MLflow tracing^]
+| traces and spans, `mlflow.openai.autolog()`, `@mlflow.trace`
+
+| link:https://github.com/eval-hub/eval-hub[EvalHub^] and link:https://github.com/EleutherAI/lm-evaluation-harness[LM Evaluation Harness^]
+| evaluation jobs API, providers, the `arc_easy` benchmark
+
+| link:https://docs.nvidia.com/nemo/guardrails/[NeMo Guardrails^]
+| rail configurations, `self check input`, the checks API
+
 | link:https://docs.vllm.ai/[vLLM^]
 | engine arguments (`--max-model-len`, tool calling, KV cache sizing) and startup memory report
 |===
@@ -77,6 +86,14 @@
 * *The gateway-to-Authorino TLS fix as a documented procedure.* Module 5 enables TLS on the Authorino
   listener because OpenShift AI's EnvoyFilter calls it over TLS; check the documentation of your
   version before relying on this in production.
+* *Benchmark quality claims.* `arc_easy` on 50 questions measures one narrow skill with a standard
+  error of about 7 points; it says nothing about a customer's domain or about safety.
+* *Guardrail effectiveness.* Twelve labelled prompts demonstrate the measurement method; they are not
+  a benchmark. The LLM judge is also not perfectly deterministic.
+* *Judge path through MaaS.* Module 9's judge calls the model's workload Service inside the cluster,
+  because on a cluster with a self-signed ingress certificate the guardrails server trusts only
+  OpenShift AI's injected CA bundle. With a publicly trusted ingress certificate it would call MaaS
+  with its own key.
 * *Automatic registry-to-deployment linkage.* The registry does not watch the cluster: the
   InferenceService's registry labels alone left the dashboard's *Deployments* column at `-`. Module 3
   records the deployment explicitly through the registry API (serving environment and inference
@@ -91,6 +108,9 @@
 * Modules 4-6: OpenShift AI {rhoai_version} documentation, _Deploying models_ (Distributed Inference
   with llm-d) and _Models-as-a-Service_; Red Hat Connectivity Link documentation;
   link:https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.5/html/release_notes/technology-preview-features_relnotes[OpenShift AI 3.5 Technology Preview features^].
+* Modules 7-9: OpenShift AI {rhoai_version} documentation on MLflow, on NeMo Guardrails, and
+  link:https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.5/html/evaluating_ai_systems/index[Evaluating AI systems^]
+  (EvalHub).
 * Workshop sources this guide builds on:
   link:https://rhai-code.github.io/zt-rhoai-operations-showroom/modules/index.html[RHOAI Operations Workshop^],
   link:https://rhpds.github.io/ph-deploy-configure-rhoai/modules/index.html[RHOAI Deploy & Configure^],
