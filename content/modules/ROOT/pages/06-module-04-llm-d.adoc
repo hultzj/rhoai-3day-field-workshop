@@ -288,7 +288,7 @@ OpenShift token on this gateway. Try the endpoint without one, then read the pol
 
 [source,bash,role="execute",subs="attributes+"]
 ----
-oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+{ cat /etc/pki/tls/certs/ca-bundle.crt; oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}'; } > ~/ingress-ca.crt
 export CURL_CA_BUNDLE=~/ingress-ca.crt
 URL=$(oc get llminferenceservice {model_name} -n {model_namespace} -o jsonpath='{.status.url}')
 curl -s -o /dev/null -w 'anonymous: %\{http_code}\n' "$URL/v1/models"

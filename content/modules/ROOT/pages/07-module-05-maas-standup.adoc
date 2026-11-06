@@ -179,7 +179,7 @@ Now Module 4's endpoint again:
 
 [source,bash,role="execute",subs="attributes+"]
 ----
-oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+{ cat /etc/pki/tls/certs/ca-bundle.crt; oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}'; } > ~/ingress-ca.crt
 export CURL_CA_BUNDLE=~/ingress-ca.crt
 URL=$(oc get llminferenceservice {model_name} -n {model_namespace} -o jsonpath='{.status.url}')
 oc wait authpolicy/{inference_gateway}-authn -n openshift-ingress --for=condition=Enforced --timeout=120s
@@ -200,12 +200,13 @@ Expected result: the AuthPolicy reports `condition met` for `Enforced`, and both
 .Video: this exercise on the test cluster, run as a participant (waits sped up)
 video::m5-ex3.mp4[width=100%]
 
-Read what the gateway logs and how OpenShift AI configured it to reach Authorino:
+Read what the gateway logs and how OpenShift AI configured it to reach Authorino. The gateway can
+run several replicas, so read every replica's log:
 
 [source,bash,role="execute",subs="attributes+"]
 ----
-GW_POD=$(oc get pods -n openshift-ingress -l gateway.networking.k8s.io/gateway-name={inference_gateway} -o name | head -1)
-oc logs -n openshift-ingress "$GW_POD" --tail=50 | grep -m1 -o 'kuadrant_wasm_shim: gRPC status code is not OK'
+oc logs -n openshift-ingress -l gateway.networking.k8s.io/gateway-name={inference_gateway} \
+  --tail=50 --max-log-requests=20 | grep -m1 -o 'kuadrant_wasm_shim: gRPC status code is not OK'
 oc get envoyfilter {inference_gateway}-authn-ssl -n openshift-ingress \
   -o jsonpath='{.spec.configPatches[0].patch.value.transport_socket.name}{"\n"}'
 oc get authorino authorino -n kuadrant-system -o jsonpath='authorino listener TLS: {.spec.listener.tls}{"\n"}'
@@ -259,17 +260,21 @@ metadata:
 spec:
   listeners:
   - hostname: maas.{cluster_domain}                # <4>
-    tls: {certificateRefs: [{name: router-certs-default}]}    # <5>
+    tls: {certificateRefs: [{name: $CERT}]}         # <5>
 ----
 <1> *name* — fixed: maas-controller looks for exactly this Gateway.
 <2> *kuadrant.io/gateway* — Kuadrant manages policies on this gateway.
 <3> *authorino-tls-bootstrap* — OpenShift AI wires the gateway's TLS connection to Authorino, the one you just fixed.
 <4> *hostname* — the ingress operator publishes a DNS record for it, pointing at the gateway's load balancer.
-<5> *certificateRefs* — the cluster's default ingress certificate, already in `openshift-ingress`.
+<5> *certificateRefs* — the Secret behind the cluster's default ingress certificate, already in
+`openshift-ingress`: the IngressController's `spec.defaultCertificate` when set (an RHDP order uses
+`cert-manager-ingress-cert`), otherwise `router-certs-default`.
 
 [source,bash,role="execute",subs="attributes+"]
 ----
 DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
+CERT=$(oc get ingresscontroller default -n openshift-ingress-operator -o jsonpath='{.spec.defaultCertificate.name}')
+CERT=${CERT:-router-certs-default}
 oc apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -293,14 +298,21 @@ spec:
       namespaces: {from: All}
     tls:
       mode: Terminate
-      certificateRefs: [{group: "", kind: Secret, name: router-certs-default}]
+      certificateRefs: [{group: "", kind: Secret, name: $CERT}]
 EOF
 oc wait gateway/{maas_gateway} -n openshift-ingress --for=condition=Programmed --timeout=300s
+# The Gateway can be Programmed while its listener is not: check that the certificate resolved.
+for i in $(seq 1 30); do
+  r=$(oc get gateway {maas_gateway} -n openshift-ingress -o jsonpath='{.status.listeners[?(@.name=="https")].conditions[?(@.type=="ResolvedRefs")].status}')
+  [ "$r" = True ] && break; sleep 10
+done
+echo "listener certificate ($CERT) resolved: $r"
 oc get gateway {maas_gateway} -n openshift-ingress -o jsonpath='address: {.status.addresses[0].value}{"\n"}'
 oc get dnsrecords -n openshift-ingress -o jsonpath='{range .items[*]}{.spec.dnsName} -> {.spec.targets[0]}{"\n"}\{end}'
 ----
 
-Expected result: `condition met` for `Programmed`; the address is an AWS load balancer hostname
+Expected result: `condition met` for `Programmed`; `listener certificate (…) resolved: True`; the
+address is an AWS load balancer hostname
 (`….elb.amazonaws.com`); and a DNS record `maas.{cluster_domain}.` points at that same hostname.
 
 == Exercise 5: Enable MaaS
@@ -323,7 +335,7 @@ oc get secret maas-db-config -n redhat-ods-applications -o jsonpath='{.data.DB_C
 oc rollout restart deploy/maas-api -n redhat-ai-gateway-infra
 oc rollout status deploy/maas-api -n redhat-ai-gateway-infra --timeout=300s
 oc get namespace {maas_namespace}
-oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+{ cat /etc/pki/tls/certs/ca-bundle.crt; oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}'; } > ~/ingress-ca.crt
 export CURL_CA_BUNDLE=~/ingress-ca.crt
 MAAS=https://maas.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')
 curl -s -o /dev/null -w 'maas-api anonymous: %\{http_code}\n' "$MAAS/maas-api/v1/models"

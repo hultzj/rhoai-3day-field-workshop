@@ -115,4 +115,33 @@ sandbox=$(platform -f automation/argocd/values-sandbox-ocp5.yaml)
 grep -q 'image: registry.redhat.io/redhat/certified-operator-index:v4.20' <<<"$sandbox" || fail "sandbox profile lacks the v4.20 certified catalog"
 grep -A3 'name: rhcl-operator$' <<<"$sandbox" | grep -q 'namespace: openshift-auth-operator' || fail "sandbox RHCL namespace is not openshift-auth-operator"
 grep -A12 'name: gpu-operator-certified$' <<<"$sandbox" | grep -q 'source: certified-operators-v420' || fail "sandbox GPU operator source is not certified-operators-v420"
+
+# An RHDP order injects gitops.repoURL; it must win over gitops.repoUrl for the platform source and
+# the Showroom content, and gitops.repoUrl must still serve make bootstrap.
+repos() { helm template lab automation/argocd -f automation/argocd/values.yaml --set deployer.domain=apps.example.com "$@" |
+  awk '$1 == "repoURL:" && $2 ~ /\/components\/platform$|\.git$/ && $2 !~ /field-sourced-content-template/ {print "platform " $2}
+       $1 == "repoUrl:" {gsub(/"/, "", $2); print "showroom " $2}' | sort; }
+[ "$(repos --set gitops.repoURL=https://example.com/order.git --set gitops.repoUrl=https://example.com/boot.git)" = $'platform https://example.com/order.git\nshowroom https://example.com/order.git' ] ||
+  fail "the order's gitops.repoURL does not reach the platform source and the Showroom content"
+[ "$(repos --set gitops.repoUrl=https://example.com/boot.git)" = $'platform https://example.com/boot.git\nshowroom https://example.com/boot.git' ] ||
+  fail "without an order, gitops.repoUrl does not reach the platform source and the Showroom content"
+
+# verify.sh picks the parent: the bootstrap name when it exists, else an RHDP order's field-content,
+# and an explicit LAB_APP always wins. Only the Applications line is judged; oc is stubbed.
+oc() { case "$*" in
+  *"applications.argoproj.io rhoai-3day-field-workshop "*) [ -n "${BOOT:-}" ] && echo application/rhoai-3day-field-workshop ;;
+  *"applications.argoproj.io field-content "*) [ -n "${RHDP:-}" ] && echo application/field-content ;;
+  *"applications.argoproj.io -l"*) printf '%b' "$APPS" ;;
+  *) return 1 ;; esac; return 0; }
+export -f oc
+# verify exits non-zero here (the other checks fail against the stub), so only its output is judged.
+apps_line() { local out; out=$(env "$@" bash automation/verify.sh 2>/dev/null) || true; grep 'lab Applications are Synced/Healthy' <<<"$out" || true; }
+rhdp_apps='field-content Synced/Healthy\nfield-content-platform Synced/Healthy field-content\nfield-content-showroom Synced/Healthy field-content\n'
+boot_apps='rhoai-3day-field-workshop Synced/Healthy rhoai-3day-field-workshop\nrhoai-3day-field-workshop-platform Synced/Healthy rhoai-3day-field-workshop\nrhoai-3day-field-workshop-showroom Synced/Healthy rhoai-3day-field-workshop\n'
+apps_line -u LAB_APP RHDP=1 APPS="$rhdp_apps" | grep -q '^PASS' || fail "verify does not find an RHDP order's field-content parent"
+apps_line -u LAB_APP BOOT=1 APPS="$boot_apps" | grep -q '^PASS' || fail "verify does not fall back to the bootstrap parent"
+apps_line -u LAB_APP BOOT=1 RHDP=1 APPS="${boot_apps}field-content OutOfSync/Degraded\n" | grep -q '^PASS' || fail "an unrelated field-content hides a healthy bootstrap deployment"
+apps_line LAB_APP=field-content BOOT=1 RHDP=1 APPS="$rhdp_apps" | grep -q '^PASS' || fail "an explicit LAB_APP is not honoured"
+apps_line -u LAB_APP RHDP=1 APPS="$boot_apps" | grep -q '^FAIL' || fail "verify passes an RHDP order whose field-content children are missing"
+unset -f oc
 echo "selftest: PASS"

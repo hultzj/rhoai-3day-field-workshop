@@ -180,7 +180,7 @@ export const MODULES = {
       run: async (s) => { await s.run(3, { expect: [T("^kuadrant_wasm_shim: gRPC status code is not OK", "gateway: auth call fails", "warn"), T("envoy\\.transport_sockets\\.tls", "gateway uses TLS", "info"), T('listener TLS: \\{"enabled":false\\}', "Authorino: plaintext", "warn")] });
         await s.run(4, { why: "Authorino to restart with TLS", expect: [T("anonymous: 401", "now enforced"), T("bad token: 401", "bad token refused"), T("you:\\s+200", "valid token allowed")] }); } },
     { id: "m5-ex4", title: "Exercise 4 · The MaaS gateway", intro: "A load-balanced Gateway; OpenShift publishes its DNS name.",
-      run: (s) => s.run(5, { why: "the load balancer", expect: [T("maas-default-gateway condition met", "Programmed"), T("elb\\.amazonaws\\.com", "an AWS load balancer, with a DNS record", "info")] }) },
+      run: (s) => s.run(5, { why: "the load balancer", expect: [T("maas-default-gateway condition met", "Programmed"), T("resolved: True$", "certificate resolved"), T("elb\\.amazonaws\\.com", "an AWS load balancer, with a DNS record", "info")] }) },
     { id: "m5-ex5", title: "Exercise 5 · Enable MaaS", intro: "One DataScienceCluster field brings up the MaaS controller and API.",
       run: async (s) => { await s.run(6, { why: "MaaS to start", retryUntil: "maas-api anonymous: 401", retries: 4,
           expect: [T('"maas-api" successfully rolled out', "maas-api"), T("maas-api anonymous: 401", "protected", "warn"), T('^\\{"data":\\[', "running: a model list (empty on a fresh cluster)")] });
@@ -223,7 +223,7 @@ export const MODULES = {
     { id: "m7-ex3", title: "Exercise 3 · No rights, no traces", intro: "Negative control: the agent may call MaaS but not write to MLflow.",
       run: async (s) => { await s.run(2, { expect: [T("gold key: 200", "gold key works")] });
         await s.run(3, { expect: [T("configmap/weather-agent (created|configured|unchanged)", "the agent's code", "info")] });
-        await s.run(4, { why: "the agent job", expect: [T("^PERMISSION_DENIED", "MLflow refuses", "warn"), T("^job: failed", "as expected", "warn")] }); } },
+        await s.run(4, { why: "the agent job", expect: [T("^PERMISSION_DENIED$|'PERMISSION_DENIED'", "MLflow refuses", "warn"), T("^job: failed", "as expected", "warn")] }); } },
     { id: "m7-ex4", title: "Exercise 4 · Grant tracing rights", intro: "The integration role, in this project only.",
       run: (s) => s.run(5, { why: "the agent job", expect: [T("^TRACE tr-\\S+ OK", "trace recorded"), T("SPAN TOOL\\s+get_weather", "the tool call"), T("^job: succeeded", "done")] }) },
     { id: "m7-ex5", title: "Exercise 5 · Read the trace", intro: "From the API, then in the dashboard, down to the tool span.",

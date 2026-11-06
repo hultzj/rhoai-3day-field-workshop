@@ -197,13 +197,17 @@ video::m6-ex3.mp4[width=100%]
 
 [source,bash,role="execute",subs="attributes+"]
 ----
-oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+{ cat /etc/pki/tls/certs/ca-bundle.crt; oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}'; } > ~/ingress-ca.crt
 export CURL_CA_BUNDLE=~/ingress-ca.crt
 DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}'); MAAS=https://maas.$DOMAIN
 for tier in gold bronze; do
-  resp=$(curl -s -X POST "$MAAS/maas-api/v1/api-keys" -H "Authorization: Bearer $(oc whoami -t)" -H 'Content-Type: application/json' \
-    -d "{\"name\":\"workshop-$tier\",\"expiresIn\":\"72h\",\"subscription\":\"granite-$tier\"}")
-  key=$(jq -r '.key // empty' <<<"$resp" 2>/dev/null)
+  # The first call after the policies attach can return nothing; try three times.
+  for try in 1 2 3; do
+    resp=$(curl -s --max-time 30 -X POST "$MAAS/maas-api/v1/api-keys" -H "Authorization: Bearer $(oc whoami -t)" -H 'Content-Type: application/json' \
+      -d "{\"name\":\"workshop-$tier\",\"expiresIn\":\"72h\",\"subscription\":\"granite-$tier\"}")
+    key=$(jq -r '.key // empty' <<<"$resp" 2>/dev/null)
+    [ -n "$key" ] && break; sleep 5
+  done
   case "$key" in
     sk-oai-*) printf '%s' "$key" > ~/key-$tier; echo "$tier key: $(cut -c1-10 ~/key-$tier)…, expires $(jq -r '.expiresAt // "?"' <<<"$resp")" ;;
     *) echo "$tier: minting failed, existing key kept: $resp" ;;

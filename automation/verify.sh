@@ -4,8 +4,16 @@ set -uo pipefail
 
 GITOPS_NS=${GITOPS_NS:-openshift-gitops}
 SHOWROOM_NS=${SHOWROOM_NS:-workshop-showroom}
-# The parent Application name; children are named <LAB_APP>-<component>.
-LAB_APP=${LAB_APP:-rhoai-3day-field-workshop}
+# The parent Application name; children are named <LAB_APP>-<component>. An RHDP order always names
+# it field-content; make bootstrap uses bootstrap.yaml's name.
+# The bootstrap parent wins when both exist, so an unrelated field-content cannot hide it.
+if [[ -z ${LAB_APP:-} ]]; then
+  LAB_APP=rhoai-3day-field-workshop
+  if [[ -z $(oc -n "$GITOPS_NS" get applications.argoproj.io "$LAB_APP" -o name --ignore-not-found 2>/dev/null) &&
+        -n $(oc -n "$GITOPS_NS" get applications.argoproj.io field-content -o name --ignore-not-found 2>/dev/null) ]]; then
+    LAB_APP=field-content
+  fi
+fi
 # The participant's user (they act as themselves, a cluster-admin): PARTICIPANT=<user> make verify.
 PARTICIPANT=${PARTICIPANT:-}
 failed=0
