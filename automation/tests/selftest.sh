@@ -193,4 +193,41 @@ assert s["selector"]["matchLabels"]["machine.openshift.io/cluster-api-machineset
 assert m["metadata"]["labels"]["app.kubernetes.io/part-of"]=="field-content" and "uid" not in m["metadata"] and "status" not in m' "$stub/c2" ||
   fail "GPU Job's MachineSet is not the tainted g6.2xlarge copy"
 rm -rf "$stub"
+
+# The GPU Job stops, creating nothing, when listing MachineSets fails.
+# Only the first listing fails (a transient error); later calls succeed and could lead to a create.
+gstub=$(mktemp -d)
+cat > "$gstub/oc" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "get machinesets -n openshift-machine-api -o name") [ -e "$SEEN" ] || { touch "$SEEN"; exit 1; }; printf 'machineset.machine.openshift.io/c-worker-us-east-2a\n' ;;
+  get\ machineset.machine.openshift.io/*) echo '{"metadata":{"name":"c-worker-us-east-2a"},"spec":{"selector":{"matchLabels":{}},"template":{"metadata":{"labels":{}},"spec":{"providerSpec":{"value":{"blockDevices":[{"ebs":{}}]}}}}}}' ;;
+  "create -f -") touch "$CREATED" ;;
+esac
+SH
+chmod +x "$gstub/oc"; export SEEN="$gstub/seen"
+CREATED="$gstub/made" PATH="$gstub:$PATH" bash -ec "$gpujob" >/dev/null 2>&1 && fail "GPU Job succeeded although listing MachineSets failed"
+[ ! -e "$gstub/made" ] || fail "GPU Job created a MachineSet after a failed listing"
+rm -rf "$gstub"
+
+# The DSC Job patches every DataScienceCluster and fails when a patch fails.
+dscjob=$(helm template t automation/argocd/components/order-prep --set partOf=field-content |
+  python3 -c 'import json,sys
+for l in sys.stdin:
+    l = l.strip()
+    if l.startswith("command:") and "datasciencecluster" in l: print(json.loads(l[len("command:"):])[2])')
+dstub=$(mktemp -d)
+printf '#!/usr/bin/env bash\ncase "$*" in "get datasciencecluster -o name") printf "%%b" "$DSCS";; "patch "*) echo "$2" >> "$LOG"; [ "$2" != "${FAILON:-none}" ];; *) exit 1;; esac\n' > "$dstub/oc"; chmod +x "$dstub/oc"
+DSCS='datasciencecluster/a\ndatasciencecluster/b\n' LOG="$dstub/log" PATH="$dstub:$PATH" bash -ec "$dscjob" >/dev/null 2>&1 || fail "DSC Job failed"
+[ "$(tr '\n' ' ' < "$dstub/log")" = "datasciencecluster/a datasciencecluster/b " ] || fail "DSC Job did not patch every DataScienceCluster"
+DSCS='datasciencecluster/a\ndatasciencecluster/b\n' LOG="$dstub/log2" FAILON=datasciencecluster/a PATH="$dstub:$PATH" bash -ec "$dscjob" >/dev/null 2>&1 && fail "DSC Job succeeded although a patch failed"
+DSCS='' LOG="$dstub/log3" PATH="$dstub:$PATH" bash -ec "$dscjob" >/dev/null 2>&1 && fail "DSC Job succeeded with no DataScienceCluster"
+rm -rf "$dstub"
+
+# verify's GPU check is not fooled by SIGPIPE: oc prints the taint first, then a large output.
+oc() { case "$*" in "get nodes"*) echo "nvidia.com/gpu"; seq 1 200000 ;; *) return 1 ;; esac; }
+export -f oc
+gpuline=$(LAB_APP=x bash automation/verify.sh 2>/dev/null | grep 'a GPU node tainted' || true)
+unset -f oc
+[ "$gpuline" = "PASS: a GPU node tainted nvidia.com/gpu exists" ] || fail "verify's GPU check fails on a large node list ($gpuline)"
 echo "selftest: PASS"

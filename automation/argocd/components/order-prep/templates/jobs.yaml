@@ -36,8 +36,10 @@ for d in $dscs; do oc patch "$d" --type merge -p '%s'; done
 ---
 {{- $gpu := printf `
 NS=openshift-machine-api
-if oc get machinesets -n $NS -o name | grep -q -- '-gpu-l4'; then echo "GPU MachineSet present"; exit 0; fi
-src=$(oc get machinesets -n $NS -o name | grep -m1 worker || true)
+# Listed first, so a failing oc stops the Job (bash -e) instead of reading as "no GPU MachineSet".
+ms=$(oc get machinesets -n $NS -o name)
+if grep -q -- '-gpu-l4' <<<"$ms"; then echo "GPU MachineSet present"; exit 0; fi
+src=$(grep -m1 worker <<<"$ms" || true)
 [ -n "$src" ] || { echo "no worker MachineSet"; exit 1; }
 oc get "$src" -n $NS -o json | INSTANCE=%s VOLUME=%d PARTOF=%s python3 -c '
 import json, os, sys
