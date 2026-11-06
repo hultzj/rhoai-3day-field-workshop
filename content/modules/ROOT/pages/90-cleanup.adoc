@@ -38,6 +38,8 @@ oc delete project ws-agent ws-eval ws-guard --ignore-not-found --wait=true
 oc delete networkpolicy {model_name}-ingress -n {model_namespace} --ignore-not-found
 oc delete mlflows.mlflow.opendatahub.io mlflow --ignore-not-found --wait=true
 oc patch datasciencecluster default-dsc --type merge -p '{"spec":{"components":{"mlflowoperator":{"managementState":"Removed"}}}}'
+oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications --type merge \
+  -p '{"spec":{"dashboardConfig":{"disableLMEval":null}}}'
 rm -f ~/labelled.tsv
 oc get project ws-agent ws-eval ws-guard --ignore-not-found
 ----
@@ -45,7 +47,8 @@ oc get project ws-agent ws-eval ws-guard --ignore-not-found
 Expected result: the projects, the NetworkPolicy and the tracking server are deleted. Evaluation
 results go with the `ws-eval` project; traces do not go with `ws-agent` (MLflow stores them on its
 own volume, keyed by workspace name) but with the tracking server and its volume, `default-dsc patched` sets MLflow back to `Removed` (its pods and
-volume disappear within a minute), and the last command prints nothing.
+volume disappear within a minute), `odh-dashboard-config patched` hides the dashboard's *Evaluations*
+page again (Module 8 turned it on), and the last command prints nothing.
 
 If you did Day 2, remove its pieces first, in the reverse order you built them (keys, then the
 service, then the platform). Look first:
@@ -77,6 +80,10 @@ oc delete aitenants.maas.opendatahub.io --all -n ai-tenants --ignore-not-found -
 oc delete deploy maas-api -n redhat-ai-gateway-infra --ignore-not-found --wait=true
 oc patch datasciencecluster default-dsc --type merge \
   -p '{"spec":{"components":{"aigateway":{"managementState":"Removed","modelsAsAService":{"managementState":"Removed"}}}}}'
+# MaaS creates its default tenant only once and records that on Config/default; once its controller
+# is gone, clear the record so that enabling MaaS again (Module 5) creates the tenant again
+oc wait --for=delete deploy/maas-controller -n redhat-ods-applications --timeout=300s
+oc annotate configs.maas.opendatahub.io default maas.opendatahub.io/default-aitenant-bootstrapped-
 oc delete namespace {maas_namespace} redhat-ai-gateway-infra ai-tenants --ignore-not-found --wait=true
 oc delete resourceclaim shared-l4 -n {model_namespace} --ignore-not-found
 oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications --type merge \

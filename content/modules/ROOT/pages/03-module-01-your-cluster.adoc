@@ -59,6 +59,11 @@ video::m1-ex1.mp4[width=100%]
 
 image::03-web-terminal-start.png[The Initialize terminal panel with Project openshift-terminal and the Start button]
 
+NOTE: The terminal stops after 15 minutes without typing (its default idle timeout), and your shell
+variables go with it. If you expect to step away, set a longer *Timeout* in the *Initialize terminal*
+panel before you click *Start*. If it does stop, reopen it and re-run the current module from its
+first exercise.
+
 TIP: For more room, open the same terminal full page in a new browser tab:
 link:https://console-openshift-console.{cluster_domain}/terminal[console-openshift-console.{cluster_domain}/terminal^].
 The step videos use that view.

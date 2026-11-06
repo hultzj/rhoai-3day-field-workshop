@@ -8,7 +8,8 @@ the same way every time, and reports a score with its uncertainty.
 
 In this module you deploy EvalHub, OpenShift AI's evaluation service, see what it can run, evaluate
 your MaaS model on a standard benchmark through its API key, and read what the score does and does
-not tell you.
+not tell you. You do it twice, through EvalHub's REST API and through the dashboard's *Evaluations*
+page, and see that both are clients of the same service and record their results in MLflow.
 
 .New to model evaluation?
 [%collapsible]
@@ -34,12 +35,19 @@ request (`model.auth.secret_ref`): an `api-key` for MaaS and a `ca_cert` to trus
 Because the model is behind MaaS, the evaluation's own tokens are charged to the subscription its
 key belongs to, like any other consumer's.
 
+A job can name an MLflow experiment. EvalHub then records each benchmark's metrics and parameters as
+an MLflow run, in the MLflow you deployed in Module 7 (workspace = the project). The dashboard's
+*Evaluations* page (Technology Preview, off by default) is a client of the EvalHub in the selected
+project: it lists the jobs, shows each result with its MLflow run, compares runs, and starts new jobs
+through the same API.
+
 == Learning objectives
 
-* Deploy EvalHub and explore its providers and benchmarks through its API.
+* Deploy EvalHub and explore its providers and benchmarks through its API and the dashboard.
 * Run a benchmark against a MaaS-published model with an API key held in a Secret.
 * Read a score together with its standard error, and explain what it does not prove.
 * Show that a wrong key makes the evaluation fail visibly, not silently.
+* Run the same evaluation from the dashboard and compare the two runs in MLflow.
 
 == Exercise 1: Deploy EvalHub
 
@@ -53,15 +61,22 @@ spec:
   tenancy: single                          # <1>
   database: {type: sqlite}                 # <2>
   providers: [lm-evaluation-harness, garak]   # <3>
+  env:
+  - name: MLFLOW_TRACKING_URI              # <4>
+    value: https://mlflow.redhat-ods-applications.svc:8443/mlflow
 ----
 <1> *tenancy: single* — serve only this namespace (`multi` serves every namespace labelled as a tenant).
 <2> *database* — required; SQLite keeps results in the pod (lost on restart), PostgreSQL keeps them.
 <3> *providers* — which evaluation frameworks to offer.
+<4> *MLFLOW_TRACKING_URI* — where EvalHub records results: the in-cluster address of your MLflow, read
+from its status below. The operator sets MLflow's CA, token and workspace itself, but not this; without
+it, a job that names an experiment is refused (`mlflow_required_for_experiment`).
 
 [source,bash,role="execute"]
 ----
 oc new-project ws-eval >/dev/null 2>&1 || oc project ws-eval
-oc apply -n ws-eval -f - <<'EOF'
+ML_URL=$(oc get mlflow mlflow -o jsonpath='{.status.address.url}')
+oc apply -n ws-eval -f - <<EOF
 apiVersion: trustyai.opendatahub.io/v1
 kind: EvalHub
 metadata:
@@ -71,15 +86,31 @@ spec:
   database:
     type: sqlite
   providers: [lm-evaluation-harness, garak]
+  env:
+  - name: MLFLOW_TRACKING_URI
+    value: $ML_URL
 EOF
 until [ "$(oc get evalhub evalhub -n ws-eval -o jsonpath='{.status.phase}')" = Ready ]; do sleep 5; done
+oc rollout status deploy/evalhub -n ws-eval --timeout=180s
 oc get evalhub evalhub -n ws-eval -o jsonpath='phase {.status.phase}, providers {.status.activeProviders}{"\n"}'
+oc get deploy evalhub -n ws-eval -o jsonpath='MLflow: {.spec.template.spec.containers[?(@.name=="evalhub")].env[?(@.name=="MLFLOW_TRACKING_URI")].value}{"\n"}'
 oc get sa -n ws-eval | grep evalhub
+# the dashboard's Evaluations page (Technology Preview) is off by default: turn it on
+oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications --type merge \
+  -p '{"spec":{"dashboardConfig":{"disableLMEval":false}}}'
 ----
 
-Expected result: within about 20 seconds, `phase Ready, providers ["lm-evaluation-harness","garak"]`,
-and two ServiceAccounts: `evalhub-service` (the API server) and `evalhub-ws-eval-job` (the identity
-evaluation jobs run as).
+Expected result: within about 20 seconds, `deployment "evalhub" successfully rolled out`, `phase Ready,
+providers ["lm-evaluation-harness","garak"]`, `MLflow: https://mlflow.redhat-ods-applications.svc:8443/mlflow`,
+two ServiceAccounts: `evalhub-service` (the API server) and `evalhub-ws-eval-job` (the identity
+evaluation jobs run as), and `odh-dashboard-config patched`.
+
+Now the dashboard. Within about a minute of the patch, the OpenShift AI dashboard shows *Develop &
+train* → *Evaluations* (marked *Tech Preview*). Open it and select the project `ws-eval`.
+
+Expected result: *No evaluation runs* and a *Start evaluation run* button. Without an EvalHub in the
+selected project, the same page reads *Evaluations unavailable*: it has nothing of its own, it is a
+client of the EvalHub you just deployed.
 
 == Exercise 2: What can it run?
 
@@ -102,13 +133,21 @@ Expected result: `health (no token): 200` and `jobs (no token): 401`; `lm_evalua
 benchmarks` and `garak: 9 benchmarks`; and the `arc_easy` entry, described as "Grade-school science
 questions testing basic reasoning and scientific knowledge (AI2 Reasoning Challenge, easy split)."
 
+The same catalog in the dashboard: on the *Evaluations* page click *Start evaluation run*, then
+*Benchmark*.
+
+Expected result: `197` benchmarks (188 + 9), filterable by category. `arc_easy` is the card *Basic
+science Q&A* (category *Reasoning*, metrics `acc` and `acc_norm`), with the description above. Click
+the *Evaluations* breadcrumb to leave without starting anything; Exercise 6 comes back here.
+
 == Exercise 3: Evaluate the MaaS model
 
 .Video: this exercise on the test cluster, run as a participant (waits sped up)
 video::m8-ex3.mp4[width=100%]
 
 The job's credentials live in a Secret: the gold API key, and the CA that signs the MaaS gateway's
-certificate. The block first checks that your gold key from Day 2 still works and mints a new one
+certificate. The job also names an MLflow experiment, `granite-evals`, in which EvalHub records the
+result. The block first checks that your gold key from Day 2 still works and mints a new one
 if it expired or your terminal lost it (the Web Terminal's home directory does not survive a restart).
 
 [source,bash,role="execute",subs="attributes+"]
@@ -127,7 +166,7 @@ oc create secret generic maas-model -n ws-eval --from-literal=api-key="$(cat ~/k
 MAAS_URL=https://maas.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')/{model_namespace}/{model_name}/v1
 submit() {  # submit <job name> <secret>
   jq -n --arg n "$1" --arg u "$MAAS_URL" --arg s "$2" '{name: $n,
-    model: {url: $u, name: "{model_name}", auth: {secret_ref: $s}},
+    model: {url: $u, name: "{model_name}", auth: {secret_ref: $s}}, experiment: {name: "granite-evals"},
     benchmarks: [{id: "arc_easy", provider_id: "lm_evaluation_harness",
       parameters: {num_examples: 50, num_few_shot: 0, tokenizer: "ibm-granite/granite-4.0-h-tiny"}}]}' |
   curl -s "${H[@]}" -H 'Content-Type: application/json' -X POST "$EH/api/v1/evaluations/jobs" -d @- > ~/eval-submit.json
@@ -145,27 +184,49 @@ await() {  # await <job id>: poll until the job ends, then print state and resul
   done
   case "$state" in completed|failed|cancelled|partially_failed) ;; *) echo "job $1 still $state after 15 minutes" >&2; return 1 ;; esac
   curl -s "${H[@]}" "$EH/api/v1/evaluations/jobs/$1" | jq '{state: .status.state, error: .status.benchmarks[0].error_message.message,
-    metrics: .results.benchmarks[0].metrics, test: .results.test}'
+    metrics: .results.benchmarks[0].metrics, test: .results.test, mlflow_experiment: .resource.mlflow_experiment_id}'
 }
 Q=https://$(oc get route thanos-querier -n openshift-monitoring -o jsonpath='{.spec.host}')/api/v1/query
 gold_tokens() { curl -s -G -H "Authorization: Bearer $(oc whoami -t)" "$Q" \
   --data-urlencode 'query=sum(authorized_hits{subscription="granite-gold"})' | jq -r '.data.result[0].value[1] // "0"'; }
+----
+
+Expected result: `gold key not usable … minting a new one` only if your Day 2 key was unusable, and
+`secret/maas-model created`. The block defines `submit`, `await` and `gold_tokens` for the rest of
+the module (the Web Terminal accepts pastes of up to about 3,000 characters, hence two blocks).
+
+Now count the gold subscription's tokens so far, submit the job and wait for it:
+
+[source,bash,role="execute"]
+----
 GOLD_BEFORE=$(gold_tokens); echo "gold tokens before: $GOLD_BEFORE"
 JOB=$(submit granite-arc-easy maas-model) && echo "job $JOB"
 oc get jobs -n ws-eval
 await "$JOB"
 ----
 
-Expected result: `gold key not usable … minting a new one` only if your Day 2 key was unusable; then
-the gold subscription's token count so far, a job ID, a Kubernetes Job in `ws-eval` (`Running`), and after about two minutes
+Expected result: the gold subscription's token count so far, a job ID, a Kubernetes Job in `ws-eval` (`Running`), and after about two minutes
 `"state": "completed"`, `"error": null`, metrics `"acc": 0.56`, `"acc_norm": 0.56`,
-`"acc_stderr": 0.0709…`, and a `test` block `{"score": 0.56, "threshold": 0.5, "pass": true}`.
+`"acc_stderr": 0.0709…`, a `test` block `{"score": 0.56, "threshold": 0.5, "pass": true}`, and
+`"mlflow_experiment"` with the ID of the `granite-evals` experiment EvalHub created.
 
 What the numbers mean: the model answered about 56% of 50 easy science questions correctly, with a
 standard error of about 7 points, so a rerun on another 50 questions could plausibly score anywhere
 from about 0.42 to 0.70. The same benchmark against the internal endpoint on the test cluster scored
 0.60: the same model, inside that uncertainty. The `test` verdict compares the score with a default
 threshold of 0.5; it is a gate you would set for your use case, not a quality certificate.
+
+Now the same run in the dashboard: on the *Evaluations* page (project `ws-eval`), click
+`granite-arc-easy`.
+
+Expected result: in the list, `granite-arc-easy` is `Complete` with result `56%`. Its page shows the
+evaluation score `56%`, the verdict `Pass` and the primary metric `acc`, and below them the MLflow run
+EvalHub recorded: the metrics `acc`, `acc_stderr`, `acc_norm`, `acc_norm_stderr` and `overall_score`,
+the parameters (`benchmark_id`, `provider_id`, `model_name`, `num_examples_evaluated` `50`,
+`duration_seconds`) and, under *About this run*, the experiment ID and the run ID. The page shows a
+*Benchmark threshold* of `0.25`, the default the catalog suggests for this benchmark; the verdict in
+your job's `test` block used `0.5`. When you gate on a score, set the threshold yourself (Exercise 6
+does).
 
 == Exercise 4: A wrong key (negative control)
 
@@ -203,6 +264,56 @@ charged (6,314 on the test cluster): the 50 benchmark questions, sent as
 completions with their answer choices, were charged to the gold subscription like any other
 consumer. (The wrong-key run used no tokens: MaaS refused it before the model.)
 
+== Exercise 6: Run the same evaluation from the dashboard
+
+.Video: this exercise on the test cluster, run as a participant (waits sped up)
+video::m8-ex6.mp4[width=100%]
+
+The wizard builds the same job you built with `jq`. Print the endpoint to paste:
+
+[source,bash,role="execute"]
+----
+echo "Endpoint URL: $MAAS_URL"
+----
+
+On the *Evaluations* page (project `ws-eval`):
+
+. Click *Start evaluation run* → *Benchmark*, and on the *Basic science Q&A* card click *Select
+  benchmark*.
+. *Evaluation name*: `granite-arc-easy-gui`. *MLflow Experiment*: *Select existing experiment* →
+  `granite-evals`.
+. *Source*: `Model`. *Model*: `Other (External endpoint)`. *Model name*: `{model_name}`. *Endpoint
+  URL*: the URL printed above. *API key secret name*: `maas-model`, the Secret from Exercise 3.
+. Click *Validate connection*. Expected: *Connection established successfully.* The check calls the
+  endpoint through MaaS with the Secret's key and CA.
+. *Benchmark threshold*: `50`. Select *Benchmark parameters* and enter
+  `{"num_examples": 50, "num_few_shot": 0, "tokenizer": "ibm-granite/granite-4.0-h-tiny"}`, the same
+  parameters as your API job.
+. Click *Start evaluation run*.
+
+Expected result: the list shows `granite-arc-easy-gui` as `Pending`, next to your earlier runs. Now
+follow it from the terminal, through the same API:
+
+[source,bash,role="execute"]
+----
+GUI_JOB=$(curl -s "${H[@]}" "$EH/api/v1/evaluations/jobs" | jq -r '.items[] | select(.name == "granite-arc-easy-gui") | .resource.id' | head -1)
+await "$GUI_JOB"
+curl -s "${H[@]}" "$EH/api/v1/evaluations/jobs" | jq -r '.items[] | "\(.name)  \(.status.state)  acc=\(.results.benchmarks[0].metrics.acc // "-")  mlflow_experiment=\(.resource.mlflow_experiment_id // "-")"'
+----
+
+Expected result: after about two minutes `"state": "completed"` with the same metrics as Exercise 3
+(`"acc": 0.56`, `"acc_stderr": 0.0709…`), a `test` block with `"threshold": 0.5` (the 50 you set) and
+`"pass": true`; then one line per job: `granite-arc-easy-gui` and `granite-arc-easy` `completed`
+with `acc=0.56` and the same `mlflow_experiment`, and `granite-arc-easy-badkey` `failed` with `acc=-`.
+
+Back on the *Evaluations* page, select `granite-arc-easy-gui` and `granite-arc-easy` and click
+*Compare*.
+
+Expected result: *Comparing granite-arc-easy-gui and granite-arc-easy*: MLflow's run comparison, with
+plots of `acc` and `duration_seconds`, both runs in experiment `granite-evals`, and their parameters
+side by side. Same model, same 50 questions, same score: whether you start it from the dashboard or
+with `curl`, it is the same EvalHub job.
+
 == Evidence checkpoint
 
 Before continuing, verify that you can answer:
@@ -211,6 +322,8 @@ Before continuing, verify that you can answer:
 * How did the evaluation authenticate to the model, and where did those credentials live?
 * What does `acc 0.56 ± 0.07` on 50 questions allow you to claim, and what not?
 * Why is it useful that a wrong key makes the job fail?
+* What did the dashboard's wizard send to EvalHub, compared with your `jq` job, and where did both
+  results end up?
 
 .Answer key
 [%collapsible]
@@ -224,6 +337,9 @@ Before continuing, verify that you can answer:
   differs by less than the standard error.
 * A silent fallback would produce a score for something other than the model, or none at all,
   without anyone noticing; a failed job is visible and alertable.
+* The same job JSON to the same API (`model.url`, `model.name`, `auth.secret_ref`, the benchmark and
+  its parameters, `experiment.name`), plus the primary metric and the threshold you chose. Both runs
+  are EvalHub jobs in `ws-eval`, and both are MLflow runs in the experiment `granite-evals`.
 ====
 
 Proceed to xref:11-module-09-guardrails.adoc[Module 9: Guard it with NeMo Guardrails].

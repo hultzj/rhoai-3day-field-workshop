@@ -41,6 +41,22 @@ async function dismissModals(p) {
   }
 }
 
+// Open a dashboard page, reloading off camera until its main text matches `re` (a dashboard setting
+// such as a feature flag takes up to a minute to reach the page).
+async function dashUntil(s, path, re, tries = 12) {
+  const p = await s.cam("dash");
+  s.take.cut();
+  for (let i = 0; i < tries; i++) {
+    await p.goto(`${s.cfg.dashboard}${path}`, { waitUntil: "domcontentloaded" });
+    await dismissModals(p);
+    for (let j = 0; j < 20; j++) {
+      if (new RegExp(re).test(await p.locator("main").innerText().catch(() => ""))) { s.take.normal(); return p; }
+      await sleep(1000);
+    }
+  }
+  s.take.normal();
+  throw new Error(`dashboard ${path}: /${re}/ never appeared`);
+}
 async function boxIn(s, cam, sel, re, label, kind = "ok") {
   // wait (off camera) for the target: dashboards render their lists after the page itself
   const p = s.take.pages[cam];
@@ -244,15 +260,63 @@ export const MODULES = {
 
   m8: { dbSecret: true, page: "10-module-08-evalhub", title: "Module 8 · Evaluate with EvalHub", exercises: [
     { id: "m8-ex1", title: "Exercise 1 · Deploy EvalHub", intro: "One CR; evaluations go to its REST API.",
-      run: (s) => s.run(0, { why: "EvalHub to start", expect: [T("phase Ready, providers", "EvalHub ready"), T("evalhub-ws-eval-job", "the jobs' identity", "info")] }) },
+      run: async (s) => { await s.run(0, { why: "EvalHub to start", expect: [T("phase Ready, providers", "EvalHub ready"), T("^MLflow: https://mlflow\\.", "results go to MLflow", "info"), T("evalhub-ws-eval-job", "the jobs' identity", "info"), T("odh-dashboard-config patched", "Evaluations page on", "info")] });
+        await dashUntil(s, "/evaluation/ws-eval", "No evaluation runs");
+        await boxIn(s, "dash", "nav a", "^Evaluations", "Develop & train → Evaluations", "info");
+        await boxIn(s, "dash", "main *", "^No evaluation runs$", "the page is a client of your EvalHub"); } },
     { id: "m8-ex2", title: "Exercise 2 · What can it run?", intro: "Providers and benchmarks, from the API.",
-      run: (s) => s.run(1, { expect: [T("jobs\\s+\\(no token\\): 401", "API protected", "warn"), T("lm_evaluation_harness: \\d+ benchmarks", "LM Evaluation Harness"), T('"id": "arc_easy"', "our benchmark", "info")] }) },
+      run: async (s) => { await s.run(1, { expect: [T("jobs\\s+\\(no token\\): 401", "API protected", "warn"), T("lm_evaluation_harness: \\d+ benchmarks", "LM Evaluation Harness"), T('"id": "arc_easy"', "our benchmark", "info")] });
+        const p = await dashUntil(s, "/evaluation/ws-eval", "Start evaluation run");
+        await p.getByRole("button", { name: "Start evaluation run" }).first().click(); await sleep(3000);
+        await p.getByText("Benchmark", { exact: true }).first().click();
+        await boxIn(s, "dash", "main *", "^Basic science Q&A$", "arc_easy: the same catalog");
+        await p.getByRole("link", { name: "Evaluations" }).first().click(); await sleep(1500); } },
     { id: "m8-ex3", title: "Exercise 3 · Evaluate the MaaS model", intro: "arc_easy, 50 questions, through a MaaS key held in a Secret.",
-      run: (s) => s.run(2, { why: "the evaluation", expect: [T('"state": "completed"', "completed"), T('"acc": 0\\.\\d+', "accuracy (±0.07 on 50 questions)"), T('"pass": true', "above the gate you set", "info")] }) },
+      run: async (s) => { await s.run(2, { expect: [T("secret/maas-model (created|configured|unchanged)", "key and CA in a Secret", "info")] });
+        await s.run(3, { why: "the evaluation", expect: [T('"state": "completed"', "completed"), T('"acc": 0\\.\\d+', "accuracy (±0.07 on 50 questions)"), T('"pass": true', "above the gate you set", "info"), T('"mlflow_experiment": "\\d+"', "recorded in MLflow", "info")] });
+        const p = await dashUntil(s, "/evaluation/ws-eval", "granite-arc-easy");
+        await boxIn(s, "dash", "main td", "^Complete$", "the API job, listed", "info");
+        await p.locator("main a").filter({ hasText: /^granite-arc-easy$/ }).first().click();
+        await boxIn(s, "dash", "main *", "^56%$|^\\d\\d%$", "evaluation score");
+        await boxIn(s, "dash", "main *", "^Pass$", "verdict", "info");
+        await boxIn(s, "dash", "main a", "^acc_stderr$", "the MLflow run's metrics", "info");
+        await boxIn(s, "dash", "main *", "^Experiment ID$", "MLflow experiment and run", "info"); } },
     { id: "m8-ex4", title: "Exercise 4 · A wrong key", intro: "Negative control: the evaluation must fail loudly.",
-      run: (s) => s.run(3, { why: "the evaluation", expect: [T('"state": "failed"', "failed, no score", "warn"), T("HTTP 403", "MaaS refused the key", "warn")] }) },
+      run: (s) => s.run(4, { why: "the evaluation", expect: [T('"state": "failed"', "failed, no score", "warn"), T("HTTP 403", "MaaS refused the key", "warn")] }) },
     { id: "m8-ex5", title: "Exercise 5 · A MaaS consumer too", intro: "The evaluation's tokens were charged to the gold tier.",
-      run: (s) => s.run(4, { why: "Prometheus to scrape", expect: [T("charged by the evaluation: [1-9]\\d*", "tokens charged")] }) },
+      run: (s) => s.run(5, { why: "Prometheus to scrape", expect: [T("charged by the evaluation: [1-9]\\d*", "tokens charged")] }) },
+    { id: "m8-ex6", title: "Exercise 6 · From the dashboard", intro: "The wizard builds the same job; both runs land in MLflow.",
+      run: async (s) => { await s.run(6, { expect: [T("^Endpoint URL: https://maas\\.", "the endpoint to paste", "info")] });
+        const url = ((await s.take.pages.term.evaluate(() => window.__rec?.termText() || "")).match(/^Endpoint URL: (\S+)/m) || [])[1];
+        if (!url) throw new Error("no endpoint URL on screen");
+        const p = await dashUntil(s, "/evaluation/ws-eval", "Start evaluation run");
+        await p.getByRole("button", { name: "Start evaluation run" }).first().click(); await sleep(3000);
+        await p.getByText("Benchmark", { exact: true }).first().click();
+        await boxIn(s, "dash", "main *", "^Basic science Q&A$", "arc_easy", "info");
+        await p.getByRole("button", { name: "Select benchmark" }).first().click();
+        await boxIn(s, "dash", "main label", "^Evaluation name", "the same job, as a form", "info");
+        await p.locator("#evaluation-name").fill("granite-arc-easy-gui");
+        await p.getByTestId("mlflow-experiment-selector-toggle").click(); await sleep(1500);
+        await p.getByRole("row").filter({ hasText: "granite-evals" }).first().click(); await sleep(800);
+        await p.getByRole("button", { name: /Choose model/ }).first().click(); await sleep(800);
+        await p.getByText("Other (External endpoint)").click(); await sleep(800);
+        await p.getByRole("textbox", { name: "Model name" }).first().fill("granite4-tiny");
+        await p.getByRole("textbox", { name: "Endpoint URL" }).first().fill(url);
+        await p.getByRole("textbox", { name: "API key secret name" }).first().fill("maas-model");
+        await p.getByRole("button", { name: "Validate connection" }).click();
+        await boxIn(s, "dash", "main .pf-v6-c-helper-text__item-text", "^Connection established successfully", "through MaaS, with the Secret's key and CA");
+        await p.getByRole("spinbutton", { name: "Benchmark threshold" }).fill("50");
+        await p.locator("#show-additional-args").check(); await sleep(800);
+        await p.locator("main textarea").fill('{"num_examples": 50, "num_few_shot": 0, "tokenizer": "ibm-granite/granite-4.0-h-tiny"}');
+        await boxIn(s, "dash", "main textarea", null, "the same parameters as the API job", "info");
+        await p.getByTestId("start-evaluation-submit").click({ timeout: 15000 });
+        await boxIn(s, "dash", "main td", "^Pending$|^Running$", "started", "info");
+        await s.run(7, { why: "the evaluation", expect: [T('"state": "completed"', "completed"), T('"threshold": 0\\.5', "the 50 you set", "info"), T('"pass": true', "pass"), T("^granite-arc-easy-gui\\s+completed\\s+acc=0\\.\\d+", "dashboard run", "info"), T("^granite-arc-easy\\s+completed\\s+acc=0\\.\\d+", "API run, same score")] });
+        const q = await dashUntil(s, "/evaluation/ws-eval", "granite-arc-easy-gui");
+        const rows = q.locator("main tbody tr");
+        for (const name of ["granite-arc-easy-gui", "granite-arc-easy"]) await rows.filter({ has: q.locator("a", { hasText: new RegExp(`^${name}$`) }) }).locator("input[type=checkbox]").check();
+        await q.getByRole("button", { name: "Compare" }).click();
+        await boxIn(s, "dash", "main *", "^Comparing granite-arc-easy-gui and granite-arc-easy$", "MLflow's run comparison"); } },
   ] },
 
   m9: { dbSecret: true, page: "11-module-09-guardrails", title: "Module 9 · Guard it with NeMo Guardrails", exercises: [

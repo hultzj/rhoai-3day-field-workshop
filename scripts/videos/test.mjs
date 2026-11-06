@@ -11,10 +11,13 @@ import { MODULES } from "./steps.mjs";
 // Evaluate an exercise's `expect` regexes against given terminal text, per execute block.
 async function check(ex, blockText) {
   const missing = [];
-  await ex.run({ run: async (i, opts = {}) => {
+  const run = async (i, opts = {}) => {
     for (const e of opts.expect || []) if (!new RegExp(e.re, "m").test(blockText(i))) missing.push(`block ${i + 1}: /${e.re}/`);
     for (const why of failedChecks(opts.check, blockText(i))) missing.push(`block ${i + 1}: ${why}`);
-  } });
+  };
+  // GUI parts cannot run here; the terminal blocks before them are checked
+  await ex.run(new Proxy({ run }, { get: (t, k) => (k in t ? t[k] : () => { throw new Error("GUI step"); }) }))
+    .catch((e) => { if (e.message !== "GUI step") throw e; });
   return missing;
 }
 const ex = (m, id) => MODULES[m].exercises.find((e) => e.id === id);
@@ -26,7 +29,7 @@ assert.ok(Object.keys(MODULES).at(-1) === "cleanup" && MODULES.cleanup.video ===
 for (const e of MODULES.cleanup.exercises) assert.deepEqual(await check(e, (i) => walk[i]), [], e.id);
 
 // 2. Module 8 Exercise 3 passes only on the guide's result: completed, scored, and above the gate.
-const evalOut = (pass) => `"state": "completed",\n  "acc": ${pass ? "0.56" : "0.01"},\n  "pass": ${pass}`;
+const evalOut = (pass) => `secret/maas-model configured\n"state": "completed",\n  "acc": ${pass ? "0.56" : "0.01"},\n  "pass": ${pass},\n  "mlflow_experiment": "2"`;
 assert.deepEqual(await check(ex("m8", "m8-ex3"), () => evalOut(true)), []);
 assert.notDeepEqual(await check(ex("m8", "m8-ex3"), () => evalOut(false)), [], "a failed gate must not match the guide");
 
@@ -65,6 +68,9 @@ assert.deepEqual(await check(ex("m3", "m3-ex4"), (i) => i === 4 ? "one-l4 create
 assert.notDeepEqual(await check(ex("m3", "m3-ex4"), (i) => i === 4 ? "one-l4 created" : `yours:    ${img}\ntemplate: ${img}x`), [], "unequal images accepted");
 assert.deepEqual(await check(ex("m3", "m3-ex8"), () => "GPU KV cache size: 1,310,720 tokens\nMaximum concurrency for 16,384 tokens per request: 80.00x\nModel loading took 6.64 GiB"), []);
 assert.notDeepEqual(await check(ex("m8", "m8-ex5"), () => "charged by the evaluation: 0"), [], "zero tokens accepted");
+// m7-ex3's refusal as the agent printed it on the test cluster (2026-11-04)
+const denied = "job.batch/weather-agent created\nERROR: Response: {'error': {'code': 'PERMISSION_DENIED', 'message': 'Permission denied for requested operation.'}}\njob: failed";
+assert.deepEqual((await check(ex("m7", "m7-ex3"), (i) => (i === 4 ? denied : "gold key: 200\nserviceaccount/weather-agent created"))).filter((m) => m.startsWith("block 5")), []);
 assert.deepEqual(await check(ex("m8", "m8-ex5"), () => "charged by the evaluation: 6314"), []);
 
 // 7. No expectation may be satisfied by the pasted command itself (the terminal shows it too).
@@ -78,6 +84,15 @@ for (const [m, mod] of Object.entries(MODULES)) {
   }
 }
 assert.deepEqual(echoed, []);
+
+// 7b. The Web Terminal drops a paste of about 3,070 characters or more (measured on the test cluster:
+// 3,050 arrives, 3,072 does not), for a participant as for the recorder: every block stays below 3,000.
+const long = [];
+for (const f of fs.readdirSync(www).filter((x) => x.endsWith(".html"))) {
+  let blocks = []; try { blocks = executeBlocks(www, f.replace(/\.html$/, "")); } catch { /* no blocks */ }
+  blocks.forEach((b, i) => { if (b.length >= 3000) long.push(`${f} block ${i + 1}: ${b.length}`); });
+}
+assert.deepEqual(long, []);
 
 // 8. Module 7's negative control survives a re-run after Exercise 4 (the guide's restart advice).
 const m7 = executeBlocks(www, MODULES.m7.page).find((b) => b.includes("\nrun_agent") && !b.includes("oc create rolebinding"));
