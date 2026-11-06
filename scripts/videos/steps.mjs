@@ -180,7 +180,7 @@ export const MODULES = {
       run: async (s) => { await s.run(3, { expect: [T("^kuadrant_wasm_shim: gRPC status code is not OK", "gateway: auth call fails", "warn"), T("envoy\\.transport_sockets\\.tls", "gateway uses TLS", "info"), T('listener TLS: \\{"enabled":false\\}', "Authorino: plaintext", "warn")] });
         await s.run(4, { why: "Authorino to restart with TLS", expect: [T("anonymous: 401", "now enforced"), T("bad token: 401", "bad token refused"), T("you:\\s+200", "valid token allowed")] }); } },
     { id: "m5-ex4", title: "Exercise 4 · The MaaS gateway", intro: "A load-balanced Gateway; OpenShift publishes its DNS name.",
-      run: (s) => s.run(5, { why: "the load balancer", expect: [T("maas-default-gateway condition met", "Programmed"), T("elb\\.amazonaws\\.com", "an AWS load balancer, with a DNS record", "info")] }) },
+      run: (s) => s.run(5, { why: "the load balancer", expect: [T("maas-default-gateway condition met", "Programmed"), T("resolved: True$", "certificate resolved"), T("elb\\.amazonaws\\.com", "an AWS load balancer, with a DNS record", "info")] }) },
     { id: "m5-ex5", title: "Exercise 5 · Enable MaaS", intro: "One DataScienceCluster field brings up the MaaS controller and API.",
       run: async (s) => { await s.run(6, { why: "MaaS to start", retryUntil: "maas-api anonymous: 401", retries: 4,
           expect: [T('"maas-api" successfully rolled out', "maas-api"), T("maas-api anonymous: 401", "protected", "warn"), T('^\\{"data":\\[', "running: a model list (empty on a fresh cluster)")] });
