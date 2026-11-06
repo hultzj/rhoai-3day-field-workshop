@@ -119,10 +119,11 @@ grep -A12 'name: gpu-operator-certified$' <<<"$sandbox" | grep -q 'source: certi
 # An RHDP order injects gitops.repoURL; it must win over gitops.repoUrl for the platform source and
 # the Showroom content, and gitops.repoUrl must still serve make bootstrap.
 repos() { helm template lab automation/argocd -f automation/argocd/values.yaml --set deployer.domain=apps.example.com "$@" |
-  awk '$1 == "repoURL:" && $2 !~ /field-sourced-content-template/ {print $2} $1 == "repoUrl:" {gsub(/"/, "", $2); print $2}' | sort -u; }
-[ "$(repos --set gitops.repoURL=https://example.com/order.git --set gitops.repoUrl=https://example.com/boot.git)" = https://example.com/order.git ] ||
+  awk '$1 == "repoURL:" && $2 ~ /\/components\/platform$|\.git$/ && $2 !~ /field-sourced-content-template/ {print "platform " $2}
+       $1 == "repoUrl:" {gsub(/"/, "", $2); print "showroom " $2}' | sort; }
+[ "$(repos --set gitops.repoURL=https://example.com/order.git --set gitops.repoUrl=https://example.com/boot.git)" = $'platform https://example.com/order.git\nshowroom https://example.com/order.git' ] ||
   fail "the order's gitops.repoURL does not reach the platform source and the Showroom content"
-[ "$(repos --set gitops.repoUrl=https://example.com/boot.git)" = https://example.com/boot.git ] ||
+[ "$(repos --set gitops.repoUrl=https://example.com/boot.git)" = $'platform https://example.com/boot.git\nshowroom https://example.com/boot.git' ] ||
   fail "without an order, gitops.repoUrl does not reach the platform source and the Showroom content"
 
 # verify.sh picks the parent: the bootstrap name when it exists, else an RHDP order's field-content,
