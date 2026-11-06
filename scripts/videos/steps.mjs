@@ -312,7 +312,9 @@ export const MODULES = {
         await boxIn(s, "dash", "main textarea", null, "the same parameters as the API job", "info");
         await p.getByTestId("start-evaluation-submit").click({ timeout: 15000 });
         await boxIn(s, "dash", "main td", "^Pending$|^Running$", "started", "info");
-        await s.run(7, { why: "the evaluation", expect: [T('"state": "completed"', "completed"), T('"threshold": 0\\.5', "the 50 you set", "info"), T('"pass": true', "pass"), T("^granite-arc-easy-gui\\s+completed\\s+acc=0\\.\\d+", "dashboard run", "info"), T("^granite-arc-easy\\s+completed\\s+acc=0\\.\\d+", "API run, same score")] });
+        await s.run(7, { why: "the evaluation", expect: [T('"state": "completed"', "completed"), T('"threshold": 0\\.5(?!\\d)', "the 50 you set", "info"), T('"pass": true', "pass"), T("^granite-arc-easy-gui\\s+completed\\s+acc=0\\.\\d+", "dashboard run", "info"), T("^granite-arc-easy\\s+completed\\s+acc=0\\.\\d+", "API run, same score")],
+          check: [{ why: "both runs in the same MLflow experiment", fn: (t) => { const id = (n) => (t.match(new RegExp(`^${n}\\s.*mlflow_experiment=(\\S+)`, "m")) || [])[1];
+            const a = id("granite-arc-easy-gui"), b = id("granite-arc-easy"); return !!a && a !== "-" && a === b; } }] });
         const q = await dashUntil(s, "/evaluation/ws-eval", "granite-arc-easy-gui");
         const rows = q.locator("main tbody tr");
         for (const name of ["granite-arc-easy-gui", "granite-arc-easy"]) await rows.filter({ has: q.locator("a", { hasText: new RegExp(`^${name}$`) }) }).locator("input[type=checkbox]").check();

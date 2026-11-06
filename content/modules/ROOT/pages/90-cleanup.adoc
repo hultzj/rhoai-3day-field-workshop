@@ -82,8 +82,8 @@ oc patch datasciencecluster default-dsc --type merge \
   -p '{"spec":{"components":{"aigateway":{"managementState":"Removed","modelsAsAService":{"managementState":"Removed"}}}}}'
 # MaaS creates its default tenant only once and records that on Config/default; once its controller
 # is gone, clear the record so that enabling MaaS again (Module 5) creates the tenant again
-oc wait --for=delete deploy/maas-controller -n redhat-ods-applications --timeout=300s
-oc annotate configs.maas.opendatahub.io default maas.opendatahub.io/default-aitenant-bootstrapped-
+oc wait --for=delete deploy/maas-controller -n redhat-ods-applications --timeout=300s &&
+  oc annotate configs.maas.opendatahub.io default maas.opendatahub.io/default-aitenant-bootstrapped-
 oc delete namespace {maas_namespace} redhat-ai-gateway-infra ai-tenants --ignore-not-found --wait=true
 oc delete resourceclaim shared-l4 -n {model_namespace} --ignore-not-found
 oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications --type merge \

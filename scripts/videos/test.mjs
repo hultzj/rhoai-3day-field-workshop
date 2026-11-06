@@ -177,17 +177,22 @@ await m8ex1("Evaluation runs\narc_easy  Completed\nStart evaluation run", ["Star
 const any = new Proxy(function () {}, { get: (_t, k) => (k === "then" ? undefined : k === Symbol.toPrimitive ? () => "Start evaluation run granite-arc-easy-gui" : any), apply: () => any });
 const m8ex6 = async (out) => {
   const missing = [];
-  const run = async (i, opts = {}) => { if (i === 7) for (const e of opts.expect || []) if (!new RegExp(e.re, "m").test(out)) missing.push(e.label); };
+  const run = async (i, opts = {}) => { if (i !== 7) return;
+    for (const e of opts.expect || []) if (!new RegExp(e.re, "m").test(out)) missing.push(e.label);
+    missing.push(...failedChecks(opts.check, out)); };
   const s = { cfg: { dashboard: "" }, run, cam: async () => any,
     take: { cut() {}, normal() {}, box: async () => 1, pages: { dash: any, term: { evaluate: async () => "Endpoint URL: https://maas.example/v1" } } } };
   await MODULES.m8.exercises.find((e) => e.id === "m8-ex6").run(s);
   return missing;
 };
-const good = '"state": "completed"\n"threshold": 0.5\n"pass": true\ngranite-arc-easy-gui  completed  acc=0.62\ngranite-arc-easy  completed  acc=0.62';
+const good = '"state": "completed"\n"threshold": 0.5\n"pass": true\ngranite-arc-easy-gui  completed  acc=0.62  mlflow_experiment=7\ngranite-arc-easy  completed  acc=0.62  mlflow_experiment=7';
 assert.deepEqual(await m8ex6(good), [], "a completed, passing run at 0.5 was refused");
 assert.notDeepEqual(await m8ex6(good.replace('"state": "completed"', '"state": "failed"')), [], "a failed evaluation accepted");
 assert.notDeepEqual(await m8ex6(good.replace('"threshold": 0.5', '"threshold": 0.6')), [], "a wrong threshold accepted");
 assert.notDeepEqual(await m8ex6(good.replace('"pass": true', '"pass": false')), [], "a fail verdict accepted");
+assert.notDeepEqual(await m8ex6(good.replace('"threshold": 0.5', '"threshold": 0.55')), [], "a 55% threshold accepted");
+assert.notDeepEqual(await m8ex6(good.replace('acc=0.62  mlflow_experiment=7\ngranite-arc-easy ', 'acc=0.62  mlflow_experiment=8\ngranite-arc-easy ')), [], "runs in different experiments accepted");
+assert.notDeepEqual(await m8ex6(good.replaceAll('mlflow_experiment=7', 'mlflow_experiment=-')), [], "runs without an experiment accepted");
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("recorder test: PASS");
