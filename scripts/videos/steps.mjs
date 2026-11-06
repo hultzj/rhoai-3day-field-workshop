@@ -223,7 +223,7 @@ export const MODULES = {
     { id: "m7-ex3", title: "Exercise 3 · No rights, no traces", intro: "Negative control: the agent may call MaaS but not write to MLflow.",
       run: async (s) => { await s.run(2, { expect: [T("gold key: 200", "gold key works")] });
         await s.run(3, { expect: [T("configmap/weather-agent (created|configured|unchanged)", "the agent's code", "info")] });
-        await s.run(4, { why: "the agent job", expect: [T("^PERMISSION_DENIED", "MLflow refuses", "warn"), T("^job: failed", "as expected", "warn")] }); } },
+        await s.run(4, { why: "the agent job", expect: [T("PERMISSION_DENIED", "MLflow refuses", "warn"), T("^job: failed", "as expected", "warn")] }); } },
     { id: "m7-ex4", title: "Exercise 4 · Grant tracing rights", intro: "The integration role, in this project only.",
       run: (s) => s.run(5, { why: "the agent job", expect: [T("^TRACE tr-\\S+ OK", "trace recorded"), T("SPAN TOOL\\s+get_weather", "the tool call"), T("^job: succeeded", "done")] }) },
     { id: "m7-ex5", title: "Exercise 5 · Read the trace", intro: "From the API, then in the dashboard, down to the tool span.",

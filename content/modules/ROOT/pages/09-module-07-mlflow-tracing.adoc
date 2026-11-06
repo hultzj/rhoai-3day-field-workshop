@@ -232,7 +232,7 @@ oc delete rolebinding weather-agent-mlflow -n ws-agent --ignore-not-found
 run_agent
 ----
 
-Expected result: the job fails: the log line `PERMISSION_DENIED` comes from MLflow's answer
+Expected result: the job fails: the log shows `PERMISSION_DENIED` (alone, or inside an `ERROR: …` line), from MLflow's answer
 (`RestException … {'error': {'code': 'PERMISSION_DENIED', …}}`) when the agent tries to create the
 experiment, followed by `job: failed`: the agent's ServiceAccount
 may call MaaS (it holds a key) but has no right to write to the `ws-agent` workspace.
