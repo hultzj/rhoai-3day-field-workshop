@@ -100,7 +100,7 @@ Ask the tracking API three ways: with no token, with your token but no workspace
 
 [source,bash,role="execute",subs="attributes+"]
 ----
-oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+{ cat /etc/pki/tls/certs/ca-bundle.crt; oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}'; } > ~/ingress-ca.crt
 export CURL_CA_BUNDLE=~/ingress-ca.crt
 ML=https://rh-ai.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')/mlflow
 oc new-project ws-agent >/dev/null 2>&1 || oc project ws-agent
@@ -283,7 +283,7 @@ through the same REST API the MLflow UI uses, in the `ws-agent` workspace:
 
 [source,bash,role="execute"]
 ----
-oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+{ cat /etc/pki/tls/certs/ca-bundle.crt; oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}'; } > ~/ingress-ca.crt
 export CURL_CA_BUNDLE=~/ingress-ca.crt
 ML=https://rh-ai.$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')/mlflow
 H=(-H "Authorization: Bearer $(oc whoami -t)" -H 'X-MLFLOW-WORKSPACE: ws-agent')

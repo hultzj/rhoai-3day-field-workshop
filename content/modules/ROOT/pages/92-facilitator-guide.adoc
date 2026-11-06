@@ -73,6 +73,9 @@ oc patch datasciencecluster default-dsc --type merge -p '{"spec":{"components":{
 . The guide is at `https://showroom-{showroom_namespace}.<apps domain>`, where the apps domain is
   the order's console URL without `console-openshift-console.`; the order page does not list it.
   Participants log in as the order's `admin` user.
+. Web Terminal stops a session after 15 idle minutes (no keystrokes), even while a command runs,
+  which can cut a long wait short. Each participant can raise it once in their terminal:
+  `wtoctl set timeout 4h` (the terminal restarts).
 
 *Any other OpenShift cluster*, from a cluster-admin shell in a checkout of this repository:
 

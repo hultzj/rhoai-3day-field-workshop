@@ -98,7 +98,7 @@ spec:
 EOF
 until oc get deploy nemoguardrails -n ws-guard >/dev/null 2>&1; do sleep 2; done
 oc rollout status deploy/nemoguardrails -n ws-guard --timeout=300s
-oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+{ cat /etc/pki/tls/certs/ca-bundle.crt; oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}'; } > ~/ingress-ca.crt
 export CURL_CA_BUNDLE=~/ingress-ca.crt
 GR=https://$(oc get route nemoguardrails -n ws-guard -o jsonpath='{.spec.host}')
 curl -s -o /dev/null -w 'no token: %{http_code}\n' "$GR/v1/rails/configs"

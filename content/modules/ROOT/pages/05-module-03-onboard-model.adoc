@@ -133,13 +133,14 @@ spec:
 <4> *kubeRBACProxy* — put the REST API behind OpenShift authentication and RBAC, and create a Route.
 
 From here on, commands send your OpenShift token (a cluster-admin credential) to cluster
-endpoints, so they verify the server first: the block saves the CA that signs the cluster's ingress
-certificate and points `curl` at it with `CURL_CA_BUNDLE`. No command in this workshop uses `curl -k`
+endpoints, so they verify the server first: the block saves the system CAs plus the chain that
+signs the cluster's ingress certificate (self-signed on some clusters, publicly signed on an RHDP
+order) and points `curl` at it with `CURL_CA_BUNDLE`. No command in this workshop uses `curl -k`
 with a token or key.
 
 [source,bash,role="execute",subs="attributes+"]
 ----
-oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}' > ~/ingress-ca.crt
+{ cat /etc/pki/tls/certs/ca-bundle.crt; oc get configmap default-ingress-cert -n openshift-config-managed -o jsonpath='{.data.ca-bundle\.crt}'; } > ~/ingress-ca.crt
 export CURL_CA_BUNDLE=~/ingress-ca.crt
 oc apply -f - <<'EOF'
 apiVersion: modelregistry.opendatahub.io/v1beta1
