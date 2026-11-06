@@ -46,8 +46,33 @@ prints the MachineSet and asks before creating it.
 
 == Provision
 
-*RHDP:* order the Field Content CI with this repository's URL and the path `automation/argocd`, on
-an OpenShift AI {rhoai_version} cluster with the GPU node above.
+*RHDP:* order *Field Sourced Content - OpenShift Base* (`multinode`, OpenShift 4.22 or later,
+*Select Base Workloads*: *OpenShift AI*; LiteMaaS and *Create users on cluster?* not needed) with
+*Existing Gitops Repo?* checked:
+
+[cols="1,2",options="header"]
+|===
+| Form field | Value
+
+| GitOps Repo | `{lab_repo_url}`
+| GitOps Revision | `main`, or an event branch
+| GitOps Path | `automation/argocd`
+|===
+
+When the order shows *Running*, from a shell logged in as the order's `admin` user (the order
+replaces kubeadmin with Keycloak SSO while it provisions):
+
+. Add the GPU node: `bash automation/gpu-machineset.sh`.
+. The order's OpenShift AI has `kserve`, `modelregistry` and `trustyai` set to `Removed`; set them
+  to `Managed`:
++
+[source,bash]
+----
+oc patch datasciencecluster default-dsc --type merge -p '{"spec":{"components":{"kserve":{"managementState":"Managed"},"modelregistry":{"managementState":"Managed"},"trustyai":{"managementState":"Managed"}}}}'
+----
+. The guide is at `https://showroom-{showroom_namespace}.<apps domain>`, where the apps domain is
+  the order's console URL without `console-openshift-console.`; the order page does not list it.
+  Participants log in as the order's `admin` user.
 
 *Any other OpenShift cluster*, from a cluster-admin shell in a checkout of this repository:
 

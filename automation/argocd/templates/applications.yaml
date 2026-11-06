@@ -1,3 +1,5 @@
+{{- /* An RHDP order injects its form's repo URL as gitops.repoURL; it wins, so children sync the repo the order names. */}}
+{{- $repo := .Values.gitops.repoURL | default .Values.gitops.repoUrl }}
 {{- define "lab.syncPolicy" }}
   syncPolicy:
     automated:
@@ -30,7 +32,7 @@ metadata:
 spec:
   project: {{ .Values.argocd.project }}
   source:
-    repoURL: {{ .Values.gitops.repoUrl }}
+    repoURL: {{ $repo }}
     targetRevision: {{ .Values.gitops.revision | quote }}
     path: {{ .Values.gitops.basePath }}/components/platform
     helm:
@@ -66,7 +68,7 @@ spec:
         showroom:
           namespace: {{ .Values.showroom.namespace }}
           content:
-            repoUrl: {{ .Values.gitops.repoUrl | quote }}
+            repoUrl: {{ $repo | quote }}
             repoRef: {{ .Values.gitops.revision | quote }}
           terminal:
             enabled: {{ .Values.showroom.terminal }}

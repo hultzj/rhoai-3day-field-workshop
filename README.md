@@ -44,7 +44,10 @@ Argo CD installs the **platform only**: the operator Subscriptions (NFD, NVIDIA 
 Connectivity Link, Web Terminal), the NFD instance and the Showroom guide. Everything the labs build
 is left to the participant.
 
-- **RHDP:** order the Field Content CI with this repository and the path `automation/argocd`.
+- **RHDP:** order *Field Sourced Content - OpenShift Base* (multinode, OpenShift AI base workload) with
+  *Existing Gitops Repo?* checked: GitOps Repo `https://github.com/hultzj/rhoai-3day-field-workshop`,
+  GitOps Revision `main`, GitOps Path `automation/argocd`. Then, as the order's `admin` user, add the
+  GPU node and enable `kserve`, `modelregistry` and `trustyai` (Facilitator Guide, *Provision*).
 - **Any other OpenShift cluster**, from a cluster-admin shell in a checkout of this repository:
 
 ```bash
