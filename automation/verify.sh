@@ -96,7 +96,8 @@ check "DRA API resource.k8s.io/v1 is served (Kubernetes 1.34+)" oc get --raw /ap
 trustyai_ready() { [ "$(oc get datasciencecluster -o jsonpath='{.items[0].status.conditions[?(@.type=="TrustyAIReady")].status}')" = True ]; }
 check "TrustyAI Ready (EvalHub and NeMo Guardrails, Day 3)" trustyai_ready
 check "EvalHub and NemoGuardrails APIs present" oc get crd evalhubs.trustyai.opendatahub.io nemoguardrails.trustyai.opendatahub.io
-gpu_node() { oc get nodes -o custom-columns=T:.spec.taints[*].key,I:.metadata.labels.node\\.kubernetes\\.io/instance-type --no-headers | grep -q 'nvidia.com/gpu'; }
+# Captured first: grep -q exiting early would kill oc with SIGPIPE and fail the pipe under pipefail.
+gpu_node() { local out; out=$(oc get nodes -o custom-columns=T:.spec.taints[*].key --no-headers) || return 1; grep -q 'nvidia.com/gpu' <<<"$out"; }
 check "a GPU node tainted nvidia.com/gpu exists" gpu_node
 no_cluster_policy() { out=$(oc get clusterpolicies.nvidia.com -o name --ignore-not-found) || return 1; [[ -z $out ]]; }
 check "no ClusterPolicy (Module 2 builds the DRA stack instead)" no_cluster_policy

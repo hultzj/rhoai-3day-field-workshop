@@ -156,4 +156,41 @@ grep -A6 'kind: Namespace' <<<"$prep" | grep -q 'app.kubernetes.io/part-of: fiel
 for c in kserve modelregistry trustyai; do grep -q "\\\\\"$c\\\\\":{\\\\\"managementState\\\\\":\\\\\"Managed\\\\\"}" <<<"$prep" || fail "order-prep does not enable $c"; done
 grep -q 'INSTANCE=g6.2xlarge' <<<"$prep" || fail "order-prep GPU instance type is not g6.2xlarge"
 grep -q 'name: add-gpu-node' <<<"$(helm template t automation/argocd/components/order-prep --set partOf=x --set gpu.enabled=false)" && fail "gpu.enabled=false still adds the GPU node"
+
+# The GPU Job's script, run with oc stubbed: it skips when a -gpu-l4 MachineSet exists, and otherwise
+# creates one tainted g6.2xlarge copied from the first worker MachineSet.
+gpujob=$(helm template t automation/argocd/components/order-prep --set partOf=field-content |
+  python3 -c 'import json,sys
+for l in sys.stdin:
+    l = l.strip()
+    if l.startswith("command:") and "add-gpu" not in l and "-gpu-l4" in l: print(json.loads(l[len("command:"):])[2])')
+[ -n "$gpujob" ] || fail "could not extract the GPU Job's script"
+stub=$(mktemp -d)
+cat > "$stub/oc" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "get machinesets -n openshift-machine-api -o name") printf '%b' "$MS" ;;
+  get\ machineset.machine.openshift.io/*-o\ json) cat <<'J'
+{"metadata":{"name":"c-worker-us-east-2a","uid":"u","resourceVersion":"1","labels":{}},"spec":{"replicas":0,
+ "selector":{"matchLabels":{"machine.openshift.io/cluster-api-machineset":"c-worker-us-east-2a"}},
+ "template":{"metadata":{"labels":{"machine.openshift.io/cluster-api-machineset":"c-worker-us-east-2a"}},
+  "spec":{"providerSpec":{"value":{"instanceType":"m5a.4xlarge","blockDevices":[{"ebs":{"volumeSize":120}}]}}}}},"status":{}}
+J
+  ;;
+  "create -f -") cat > "$CREATED"; echo created ;;
+  *) echo "unexpected oc $*" >&2; exit 1 ;;
+esac
+SH
+chmod +x "$stub/oc"
+out=$(MS='machineset.machine.openshift.io/c-gpu-l4-us-east-2a\n' CREATED="$stub/c1" PATH="$stub:$PATH" bash -ec "$gpujob" 2>&1) || fail "GPU Job failed with a GPU MachineSet present: $out"
+[ ! -e "$stub/c1" ] || fail "GPU Job created a second GPU MachineSet"
+out=$(MS='machineset.machine.openshift.io/c-worker-us-east-2a\n' CREATED="$stub/c2" PATH="$stub:$PATH" bash -ec "$gpujob" 2>&1) || fail "GPU Job failed: $out"
+python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); s=m["spec"]; p=s["template"]["spec"]
+assert m["metadata"]["name"]=="c-gpu-l4-us-east-2a" and s["replicas"]==1
+assert p["providerSpec"]["value"]["instanceType"]=="g6.2xlarge" and p["providerSpec"]["value"]["blockDevices"][0]["ebs"]["volumeSize"]==200
+assert p["taints"]==[{"key":"nvidia.com/gpu","value":"True","effect":"NoSchedule"}]
+assert s["selector"]["matchLabels"]["machine.openshift.io/cluster-api-machineset"]=="c-gpu-l4-us-east-2a"
+assert m["metadata"]["labels"]["app.kubernetes.io/part-of"]=="field-content" and "uid" not in m["metadata"] and "status" not in m' "$stub/c2" ||
+  fail "GPU Job's MachineSet is not the tainted g6.2xlarge copy"
+rm -rf "$stub"
 echo "selftest: PASS"
