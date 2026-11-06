@@ -143,6 +143,15 @@ Every line must print `PASS`. Fix any `FAIL` before participants arrive.
   *Timeout* option sets a longer one). Seen on the test cluster during a long recording session. Shell
   variables and helpers are then gone: participants re-run the current module from its first
   exercise (see _How the exercises build on each other_ on the Prerequisites page).
+  The timeout is `WEB_TERMINAL_IDLE_TIMEOUT` (default `15m`) in the `web-terminal-exec` template in
+  `openshift-operators`. To lengthen it, each participant runs this in their own terminal (Web
+  Terminal's `wtoctl` changes only the caller's workspace; the terminal restarts once). Verified on
+  the RHDP order: the workspace then carries `WEB_TERMINAL_IDLE_TIMEOUT=4h`.
++
+[source,bash]
+----
+wtoctl set timeout 4h
+----
 * *DNS for `maas.<domain>`.* The ingress operator publishes the record within seconds and the Web
   Terminal resolves it at once; laptops with cached negative answers may need several minutes.
 * *User-workload monitoring.* Module 5 enables it. If the cluster already has a

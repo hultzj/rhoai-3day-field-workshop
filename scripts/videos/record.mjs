@@ -7,7 +7,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { Take, VIEW, encode, executeBlocks, loadSecrets, mkdirp, openTerminal, publish, rel, runBlock, scan, scanSecretRefs, segments, selectRun, failedChecks, sleep, waitFast, withWorkDir } from "./lib.mjs";
+import { Take, VIEW, encode, executeBlocks, loadSecrets, mkdirp, openTerminal, publish, rel, runBlock, writeDebug, scan, scanSecretRefs, segments, selectRun, failedChecks, sleep, waitFast, withWorkDir } from "./lib.mjs";
 import { MODULES } from "./steps.mjs";
 
 const argv = process.argv.slice(2);
@@ -116,7 +116,9 @@ async function recordModule(m, exercises, work) {
       failure = { id: ex.id, message: e.message };
       try {
         const text = await termText();
-        if (!scan([text], secretsNow(mod)).length) console.error(`--- ${ex.id} terminal (last rows) ---\n${text.split("\n").filter((l) => l.trim()).slice(-25).join("\n")}`);
+        const secrets = secretsNow(mod);
+        if (!scan([text], secrets).length) console.error(`--- ${ex.id} terminal (last rows) ---\n${text.split("\n").filter((l) => l.trim()).slice(-25).join("\n")}`);
+        if (process.env.DEBUG_DIR) { mkdirp(process.env.DEBUG_DIR); writeDebug(process.env.DEBUG_DIR, ex.id, text, await pages.term.screenshot().catch(() => null), secrets); }
       } catch { /* the page is gone */ }
       break;
     }

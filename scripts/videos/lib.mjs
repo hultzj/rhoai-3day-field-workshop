@@ -343,7 +343,14 @@ export async function typeBlock(page, block) {
     return false;
   };
   await paste();
-  if (!(await changed(4000))) { await paste(); if (!(await changed(4000))) throw new Error("paste did not reach the terminal"); }
+  if (!(await changed(4000))) {
+    // a tab brought back from another camera can need focus and a repaint before it shows input
+    await page.bringToFront(); await page.locator(".xterm-screen").click().catch(() => {}); await sleep(1500);
+    if ((await termText(page)) === before) {  // otherwise the first paste arrived and just had not been drawn
+      await paste();
+      if (!(await changed(6000))) throw new Error("paste did not reach the terminal");
+    }
+  }
   await sleep(600);
   await page.keyboard.press("Enter");
 }

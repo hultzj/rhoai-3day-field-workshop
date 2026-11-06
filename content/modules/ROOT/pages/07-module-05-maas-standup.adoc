@@ -194,6 +194,9 @@ NOTE: Both calls fail with HTTP 500. This is expected: the policy is now enforce
 cannot reach Authorino. The next exercise finds out why.
 
 Expected result: the AuthPolicy reports `condition met` for `Enforced`, and both lines print `500`.
+(If you are re-running this module after Exercise 3, for example after a terminal restart, the lines
+print `anonymous: 401` and `you: 200`: Exercise 3's fix is already in place. Re-run Exercise 3's
+blocks anyway; they are safe to repeat and set the variables later exercises use.)
 
 == Exercise 3: Find and fix the gateway-to-Authorino TLS mismatch (break and restore)
 

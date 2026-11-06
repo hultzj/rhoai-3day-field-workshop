@@ -11,10 +11,13 @@ import { MODULES } from "./steps.mjs";
 // Evaluate an exercise's `expect` regexes against given terminal text, per execute block.
 async function check(ex, blockText) {
   const missing = [];
-  await ex.run({ run: async (i, opts = {}) => {
+  const run = async (i, opts = {}) => {
     for (const e of opts.expect || []) if (!new RegExp(e.re, "m").test(blockText(i))) missing.push(`block ${i + 1}: /${e.re}/`);
     for (const why of failedChecks(opts.check, blockText(i))) missing.push(`block ${i + 1}: ${why}`);
-  } });
+  };
+  // GUI parts cannot run here; the terminal blocks before them are checked
+  await ex.run(new Proxy({ run }, { get: (t, k) => (k in t ? t[k] : () => { throw new Error("GUI step"); }) }))
+    .catch((e) => { if (e.message !== "GUI step") throw e; });
   return missing;
 }
 const ex = (m, id) => MODULES[m].exercises.find((e) => e.id === id);
@@ -26,7 +29,7 @@ assert.ok(Object.keys(MODULES).at(-1) === "cleanup" && MODULES.cleanup.video ===
 for (const e of MODULES.cleanup.exercises) assert.deepEqual(await check(e, (i) => walk[i]), [], e.id);
 
 // 2. Module 8 Exercise 3 passes only on the guide's result: completed, scored, and above the gate.
-const evalOut = (pass) => `"state": "completed",\n  "acc": ${pass ? "0.56" : "0.01"},\n  "pass": ${pass}`;
+const evalOut = (pass) => `secret/maas-model configured\n"state": "completed",\n  "acc": ${pass ? "0.56" : "0.01"},\n  "pass": ${pass},\n  "mlflow_experiment": "2"`;
 assert.deepEqual(await check(ex("m8", "m8-ex3"), () => evalOut(true)), []);
 assert.notDeepEqual(await check(ex("m8", "m8-ex3"), () => evalOut(false)), [], "a failed gate must not match the guide");
 
@@ -65,6 +68,9 @@ assert.deepEqual(await check(ex("m3", "m3-ex4"), (i) => i === 4 ? "one-l4 create
 assert.notDeepEqual(await check(ex("m3", "m3-ex4"), (i) => i === 4 ? "one-l4 created" : `yours:    ${img}\ntemplate: ${img}x`), [], "unequal images accepted");
 assert.deepEqual(await check(ex("m3", "m3-ex8"), () => "GPU KV cache size: 1,310,720 tokens\nMaximum concurrency for 16,384 tokens per request: 80.00x\nModel loading took 6.64 GiB"), []);
 assert.notDeepEqual(await check(ex("m8", "m8-ex5"), () => "charged by the evaluation: 0"), [], "zero tokens accepted");
+// m7-ex3's refusal as the agent printed it on the test cluster (2026-11-04)
+const denied = "job.batch/weather-agent created\nERROR: Response: {'error': {'code': 'PERMISSION_DENIED', 'message': 'Permission denied for requested operation.'}}\njob: failed";
+assert.deepEqual((await check(ex("m7", "m7-ex3"), (i) => (i === 4 ? denied : "gold key: 200\nserviceaccount/weather-agent created"))).filter((m) => m.startsWith("block 5")), []);
 assert.deepEqual(await check(ex("m8", "m8-ex5"), () => "charged by the evaluation: 6314"), []);
 
 // 7. No expectation may be satisfied by the pasted command itself (the terminal shows it too).
@@ -78,6 +84,15 @@ for (const [m, mod] of Object.entries(MODULES)) {
   }
 }
 assert.deepEqual(echoed, []);
+
+// 7b. The Web Terminal drops a paste of about 3,070 characters or more (measured on the test cluster:
+// 3,050 arrives, 3,072 does not), for a participant as for the recorder: every block stays below 3,000.
+const long = [];
+for (const f of fs.readdirSync(www).filter((x) => x.endsWith(".html"))) {
+  let blocks = []; try { blocks = executeBlocks(www, f.replace(/\.html$/, "")); } catch { /* no blocks */ }
+  blocks.forEach((b, i) => { if (b.length >= 3000) long.push(`${f} block ${i + 1}: ${b.length}`); });
+}
+assert.deepEqual(long, []);
 
 // 8. Module 7's negative control survives a re-run after Exercise 4 (the guide's restart advice).
 const m7 = executeBlocks(www, MODULES.m7.page).find((b) => b.includes("\nrun_agent") && !b.includes("oc create rolebinding"));
@@ -144,6 +159,40 @@ assert.notDeepEqual(await check(ex("cleanup", "cleanup-day1"), (i) => (i === 5 ?
 // 14. Module 9's negative control survives a re-run after Exercise 6.
 const m9 = executeBlocks(www, MODULES.m9.page).find((b) => /\nprobe ws-gpu-lab\s*$/.test(b));
 assert.ok(m9 && /oc delete networkpolicy granite4-tiny-ingress[^\n]*\nprobe ws-gpu-lab\s*$/.test(m9), "Exercise 5 must drop Exercise 6's NetworkPolicy before probing");
+
+// 10. Module 8 Exercise 1 passes on a first run (no evaluations) and on a re-run (runs listed).
+async function m8ex1(mainText, buttons) {
+  const page = { goto: async () => {}, keyboard: { press: async () => {} },
+    locator: (sel) => ({ innerText: async () => mainText, filter: () => ({ first: () => ({ count: async () => 0 }) }), first: () => ({ count: async () => 0 }) }),
+    evaluate: async (_f, [sel, re]) => (sel === "main button" ? buttons : ["Evaluations"]).filter((t) => !re || new RegExp(re, "i").test(t)).length };
+  const take = { cut() {}, normal() {}, pages: { dash: page }, box: async (_c, { sel, re }) => page.evaluate(null, [sel, re]) };
+  const s = { cfg: { dashboard: "https://dash.invalid" }, take, cam: async () => page, run: async () => {} };
+  await MODULES.m8.exercises.find((e) => e.id === "m8-ex1").run(s);
+}
+await m8ex1("No evaluation runs\nStart evaluation run", ["Start evaluation run"]);
+await m8ex1("Evaluation runs\narc_easy  Completed\nStart evaluation run", ["Start evaluation run"]);
+
+// 11. Module 8 Exercise 6's result checks (block 7, after the dashboard wizard) accept a completed,
+// passing run at the 50% threshold and reject a failed one, a wrong threshold or a fail verdict.
+const any = new Proxy(function () {}, { get: (_t, k) => (k === "then" ? undefined : k === Symbol.toPrimitive ? () => "Start evaluation run granite-arc-easy-gui" : any), apply: () => any });
+const m8ex6 = async (out) => {
+  const missing = [];
+  const run = async (i, opts = {}) => { if (i !== 7) return;
+    for (const e of opts.expect || []) if (!new RegExp(e.re, "m").test(out)) missing.push(e.label);
+    missing.push(...failedChecks(opts.check, out)); };
+  const s = { cfg: { dashboard: "" }, run, cam: async () => any,
+    take: { cut() {}, normal() {}, box: async () => 1, pages: { dash: any, term: { evaluate: async () => "Endpoint URL: https://maas.example/v1" } } } };
+  await MODULES.m8.exercises.find((e) => e.id === "m8-ex6").run(s);
+  return missing;
+};
+const good = '"state": "completed"\n"threshold": 0.5\n"pass": true\ngranite-arc-easy-gui  completed  acc=0.62  mlflow_experiment=7\ngranite-arc-easy  completed  acc=0.62  mlflow_experiment=7';
+assert.deepEqual(await m8ex6(good), [], "a completed, passing run at 0.5 was refused");
+assert.notDeepEqual(await m8ex6(good.replace('"state": "completed"', '"state": "failed"')), [], "a failed evaluation accepted");
+assert.notDeepEqual(await m8ex6(good.replace('"threshold": 0.5', '"threshold": 0.6')), [], "a wrong threshold accepted");
+assert.notDeepEqual(await m8ex6(good.replace('"pass": true', '"pass": false')), [], "a fail verdict accepted");
+assert.notDeepEqual(await m8ex6(good.replace('"threshold": 0.5', '"threshold": 0.55')), [], "a 55% threshold accepted");
+assert.notDeepEqual(await m8ex6(good.replace('acc=0.62  mlflow_experiment=7\ngranite-arc-easy ', 'acc=0.62  mlflow_experiment=8\ngranite-arc-easy ')), [], "runs in different experiments accepted");
+assert.notDeepEqual(await m8ex6(good.replaceAll('mlflow_experiment=7', 'mlflow_experiment=-')), [], "runs without an experiment accepted");
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("recorder test: PASS");
