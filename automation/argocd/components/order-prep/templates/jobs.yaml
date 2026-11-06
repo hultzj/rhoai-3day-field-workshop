@@ -1,0 +1,64 @@
+{{- define "orderprep.job" }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .name }}
+  namespace: {{ .root.Values.namespace }}
+  annotations:
+    # Re-run on every sync; both scripts are safe to repeat.
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      serviceAccountName: order-prep
+      restartPolicy: OnFailure
+      containers:
+      - name: run
+        image: {{ .root.Values.cliImage }}
+        command: ["bash", "-ec", {{ .script | quote }}]
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          capabilities: {drop: [ALL]}
+          seccompProfile: {type: RuntimeDefault}
+{{- end }}
+{{- $patch := dict "spec" (dict "components" (dict)) }}
+{{- range .Values.components }}{{ $_ := set $patch.spec.components . (dict "managementState" "Managed") }}{{ end }}
+{{- $dsc := printf `
+dscs=$(oc get datasciencecluster -o name)
+[ -n "$dscs" ] || { echo "no DataScienceCluster yet"; exit 1; }
+for d in $dscs; do oc patch "$d" --type merge -p '%s'; done
+` (toJson $patch) }}
+{{- include "orderprep.job" (dict "root" . "name" "enable-rhoai-components" "script" $dsc) }}
+{{- if .Values.gpu.enabled }}
+---
+{{- $gpu := printf `
+NS=openshift-machine-api
+if oc get machinesets -n $NS -o name | grep -q -- '-gpu-l4'; then echo "GPU MachineSet present"; exit 0; fi
+src=$(oc get machinesets -n $NS -o name | grep -m1 worker || true)
+[ -n "$src" ] || { echo "no worker MachineSet"; exit 1; }
+oc get "$src" -n $NS -o json | INSTANCE=%s VOLUME=%d PARTOF=%s python3 -c '
+import json, os, sys
+m = json.load(sys.stdin)
+n = m["metadata"]["name"]
+name = n.replace("-worker-", "-gpu-l4-", 1) if "-worker-" in n else n + "-gpu-l4"
+for k in ("uid", "resourceVersion", "creationTimestamp", "generation", "managedFields", "annotations"):
+    m["metadata"].pop(k, None)
+m.pop("status", None)
+m["metadata"]["name"] = name
+m["metadata"].setdefault("labels", {})["app.kubernetes.io/part-of"] = os.environ["PARTOF"]
+s = m["spec"]
+s["replicas"] = 1
+s["selector"]["matchLabels"]["machine.openshift.io/cluster-api-machineset"] = name
+s["template"]["metadata"]["labels"]["machine.openshift.io/cluster-api-machineset"] = name
+s["template"]["spec"]["taints"] = [{"key": "nvidia.com/gpu", "value": "True", "effect": "NoSchedule"}]
+p = s["template"]["spec"]["providerSpec"]["value"]
+p["instanceType"] = os.environ["INSTANCE"]
+p["blockDevices"][0]["ebs"]["volumeSize"] = int(os.environ["VOLUME"])
+json.dump(m, sys.stdout)
+' | oc create -f -
+` .Values.gpu.instanceType (int .Values.gpu.volumeSize) .Values.partOf }}
+{{- include "orderprep.job" (dict "root" . "name" "add-gpu-node" "script" $gpu) }}
+{{- end }}

@@ -144,4 +144,16 @@ apps_line -u LAB_APP BOOT=1 RHDP=1 APPS="${boot_apps}field-content OutOfSync/Deg
 apps_line LAB_APP=field-content BOOT=1 RHDP=1 APPS="$rhdp_apps" | grep -q '^PASS' || fail "an explicit LAB_APP is not honoured"
 apps_line -u LAB_APP RHDP=1 APPS="$boot_apps" | grep -q '^FAIL' || fail "verify passes an RHDP order whose field-content children are missing"
 unset -f oc
+
+# order-prep runs on an RHDP order (guid injected) and never on make bootstrap unless forced.
+apps() { helm template field-content automation/argocd -f automation/argocd/values.yaml --set deployer.domain=apps.example.com "$@"; }
+grep -q 'name: field-content-order-prep' <<<"$(apps)" && fail "order-prep rendered without an RHDP order"
+grep -q 'name: field-content-order-prep' <<<"$(apps --set guid=abc12-1)" || fail "order-prep missing on an RHDP order"
+grep -q 'name: field-content-order-prep' <<<"$(apps --set guid=abc12-1 --set orderPrep.enabled=false)" && fail "orderPrep.enabled=false ignored"
+grep -q 'name: field-content-order-prep' <<<"$(apps --set orderPrep.enabled=true)" || fail "orderPrep.enabled=true ignored"
+prep=$(helm template field-content automation/argocd/components/order-prep --set partOf=field-content)
+grep -A6 'kind: Namespace' <<<"$prep" | grep -q 'app.kubernetes.io/part-of: field-content' || fail "order-prep namespace lacks the lab's part-of label"
+for c in kserve modelregistry trustyai; do grep -q "\\\\\"$c\\\\\":{\\\\\"managementState\\\\\":\\\\\"Managed\\\\\"}" <<<"$prep" || fail "order-prep does not enable $c"; done
+grep -q 'INSTANCE=g6.2xlarge' <<<"$prep" || fail "order-prep GPU instance type is not g6.2xlarge"
+grep -q 'name: add-gpu-node' <<<"$(helm template t automation/argocd/components/order-prep --set partOf=x --set gpu.enabled=false)" && fail "gpu.enabled=false still adds the GPU node"
 echo "selftest: PASS"

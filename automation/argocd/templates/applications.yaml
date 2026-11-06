@@ -43,6 +43,36 @@ spec:
     namespace: {{ .Values.platform.namespace }}
 {{- include "lab.syncPolicy" . }}
 {{- end }}
+{{- /* RHDP order only by default: the order injects guid, make bootstrap does not. */}}
+{{- $prep := .Values.orderPrep.enabled }}
+{{- if or (eq (toString $prep) "true") (and (eq (toString $prep) "auto") .Values.guid) }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ .Release.Name }}-order-prep
+  namespace: {{ .Values.argocd.namespace }}
+  labels:
+    demo.redhat.com/application: field-content
+    app.kubernetes.io/part-of: {{ .Release.Name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Values.argocd.project }}
+  source:
+    repoURL: {{ $repo }}
+    targetRevision: {{ .Values.gitops.revision | quote }}
+    path: {{ .Values.gitops.basePath }}/components/order-prep
+    helm:
+      valuesObject:
+        {{- toYaml (merge (dict "partOf" .Release.Name "argocdNamespace" .Values.argocd.namespace "namespace" .Values.orderPrep.namespace) .Values.orderPrep.values) | nindent 8 }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Values.orderPrep.namespace }}
+{{- include "lab.syncPolicy" . }}
+{{- end }}
 {{- if .Values.showroom.enabled }}
 ---
 apiVersion: argoproj.io/v1alpha1

@@ -46,8 +46,9 @@ is left to the participant.
 
 - **RHDP:** order *Field Sourced Content - OpenShift Base* (multinode, OpenShift AI base workload) with
   *Existing Gitops Repo?* checked: GitOps Repo `https://github.com/hultzj/rhoai-3day-field-workshop`,
-  GitOps Revision `main`, GitOps Path `automation/argocd`. Then, as the order's `admin` user, add the
-  GPU node and enable `kserve`, `modelregistry` and `trustyai` (Facilitator Guide, *Provision*).
+  GitOps Revision `main`, GitOps Path `automation/argocd`. The chart's `order-prep` step then enables
+  `kserve`, `modelregistry` and `trustyai` and adds the GPU node by itself; check with
+  `make -C automation verify` as the order's `admin` user (Facilitator Guide, *Provision*).
 - **Any other OpenShift cluster**, from a cluster-admin shell in a checkout of this repository:
 
 ```bash
