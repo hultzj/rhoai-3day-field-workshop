@@ -150,6 +150,11 @@ The `NVIDIADriver` CR tells the GPU Operator which driver image to run and on wh
 operator ships a pinned driver image; the CR below uses its digest and selects nodes by the NFD
 label from Exercise 1.
 
+IMPORTANT: The GPU Operator labels GPU nodes (`nvidia.com/gpu.present`) only once a `GPUCluster` or
+`ClusterPolicy` exists, and the driver runs only on labelled nodes. The block below therefore also
+creates the `GPUCluster` that Exercise 3 explains; without it the NVIDIADriver reports `ready` while
+running no driver at all.
+
 [source,yaml,subs="attributes+"]
 ----
 apiVersion: nvidia.com/v1alpha1
@@ -188,10 +193,28 @@ spec:
     operator: Exists
     effect: NoSchedule
 EOF
+oc apply -f - <<'EOF'
+apiVersion: nvidia.com/v1alpha1
+kind: GPUCluster
+metadata:
+  name: gpu-cluster
+spec:
+  draDriver:
+    computeDomains:
+      enabled: false
+  daemonsets:
+    tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  dcgmExporter:
+    enabled: true
+EOF
 ----
 
-Expected result: `nvidiadriver.nvidia.com/gpu-driver created`. Creation alone proves nothing; the
-next block waits for the driver to load.
+Expected result: `nvidiadriver.nvidia.com/gpu-driver created` and
+`gpucluster.nvidia.com/gpu-cluster created`. Creation alone proves nothing; the next block waits for
+the driver to load.
 
 The driver container needs a few minutes to start and load the kernel modules. Wait for the CR to
 report `ready`:
@@ -200,15 +223,18 @@ report `ready`:
 ----
 for i in $(seq 1 60); do
   s=$(oc get nvidiadriver gpu-driver -o jsonpath='{.status.state}')
-  echo "driver state: ${s:-pending}"; [ "$s" = ready ] && break; sleep 10
+  DRIVER_POD=$(oc get pods -n nvidia-gpu-operator -o name | grep nvidia-gpu-driver | head -1)
+  r=$([ -n "$DRIVER_POD" ] && oc get -n nvidia-gpu-operator "$DRIVER_POD" -o jsonpath='{.status.containerStatuses[?(@.name=="nvidia-driver-ctr")].ready}')
+  [ "$r" = true ] || s="${s:-pending}, waiting for the driver pod"
+  echo "driver state: $s"; [ "$s" = ready ] && break; sleep 10
 done
-DRIVER_POD=$(oc get pods -n nvidia-gpu-operator -o name | grep nvidia-gpu-driver | head -1)
 oc exec -n nvidia-gpu-operator "$DRIVER_POD" -c nvidia-driver-ctr -- \
   nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
 ----
 
-Expected result: `driver state: notReady` repeats for two to three minutes while the driver container
-loads the kernel modules, then the loop ends on `driver state: ready`, and `nvidia-smi` prints one row:
+Expected result: `driver state: …, waiting for the driver pod` repeats for three to five minutes
+while the driver container builds and loads the kernel modules, then the loop ends on
+`driver state: ready` (the CR is ready and its driver pod is Ready), and `nvidia-smi` prints one row:
 `NVIDIA L4, 23034 MiB, 595.91.07` (or the driver version the operator shipped). The kernel
 driver is loaded and talks to the GPU, but the scheduler still cannot hand it out: that is the
 next exercise.
@@ -219,6 +245,9 @@ In short: the driver makes the GPU work on the node; it does not make it schedul
 
 .Video: this exercise on the test cluster, run as a participant (waits sped up)
 video::m2-ex3.mp4[width=100%]
+
+You created this `GPUCluster` in Exercise 2 so the driver could deploy; here is what it runs.
+Re-applying it changes nothing.
 
 [source,yaml]
 ----
@@ -264,7 +293,8 @@ done
 oc get pods -n nvidia-gpu-operator
 ----
 
-Expected result: the loop ends on `gpucluster state: ready`, and `nvidia-gpu-operator` runs
+Expected result: `gpucluster.nvidia.com/gpu-cluster unchanged`, the loop ends on
+`gpucluster state: ready`, and `nvidia-gpu-operator` runs
 `nvidia-dra-driver-kubelet-plugin-…`, `nvidia-dra-validator-…` and `nvidia-dcgm-exporter-dra-…`
 next to the driver pod, all `Running`. There is no device plugin pod: this stack never advertises
 `nvidia.com/gpu`.
