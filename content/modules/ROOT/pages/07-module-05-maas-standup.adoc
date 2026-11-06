@@ -200,12 +200,13 @@ Expected result: the AuthPolicy reports `condition met` for `Enforced`, and both
 .Video: this exercise on the test cluster, run as a participant (waits sped up)
 video::m5-ex3.mp4[width=100%]
 
-Read what the gateway logs and how OpenShift AI configured it to reach Authorino:
+Read what the gateway logs and how OpenShift AI configured it to reach Authorino. The gateway can
+run several replicas, so read every replica's log:
 
 [source,bash,role="execute",subs="attributes+"]
 ----
-GW_POD=$(oc get pods -n openshift-ingress -l gateway.networking.k8s.io/gateway-name={inference_gateway} -o name | head -1)
-oc logs -n openshift-ingress "$GW_POD" --tail=50 | grep -m1 -o 'kuadrant_wasm_shim: gRPC status code is not OK'
+oc logs -n openshift-ingress -l gateway.networking.k8s.io/gateway-name={inference_gateway} \
+  --tail=50 --max-log-requests=20 | grep -m1 -o 'kuadrant_wasm_shim: gRPC status code is not OK'
 oc get envoyfilter {inference_gateway}-authn-ssl -n openshift-ingress \
   -o jsonpath='{.spec.configPatches[0].patch.value.transport_socket.name}{"\n"}'
 oc get authorino authorino -n kuadrant-system -o jsonpath='authorino listener TLS: {.spec.listener.tls}{"\n"}'
