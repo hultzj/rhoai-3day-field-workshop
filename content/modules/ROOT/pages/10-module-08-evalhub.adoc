@@ -108,7 +108,8 @@ evaluation jobs run as), and `odh-dashboard-config patched`.
 Now the dashboard. Within about a minute of the patch, the OpenShift AI dashboard shows *Develop &
 train* → *Evaluations* (marked *Tech Preview*). Open it and select the project `ws-eval`.
 
-Expected result: *No evaluation runs* and a *Start evaluation run* button. Without an EvalHub in the
+Expected result: *No evaluation runs* (if you are re-running this module, the runs you already
+made) and a *Start evaluation run* button. Without an EvalHub in the
 selected project, the same page reads *Evaluations unavailable*: it has nothing of its own, it is a
 client of the EvalHub you just deployed.
 

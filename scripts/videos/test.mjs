@@ -160,5 +160,17 @@ assert.notDeepEqual(await check(ex("cleanup", "cleanup-day1"), (i) => (i === 5 ?
 const m9 = executeBlocks(www, MODULES.m9.page).find((b) => /\nprobe ws-gpu-lab\s*$/.test(b));
 assert.ok(m9 && /oc delete networkpolicy granite4-tiny-ingress[^\n]*\nprobe ws-gpu-lab\s*$/.test(m9), "Exercise 5 must drop Exercise 6's NetworkPolicy before probing");
 
+// 10. Module 8 Exercise 1 passes on a first run (no evaluations) and on a re-run (runs listed).
+async function m8ex1(mainText, buttons) {
+  const page = { goto: async () => {}, keyboard: { press: async () => {} },
+    locator: (sel) => ({ innerText: async () => mainText, filter: () => ({ first: () => ({ count: async () => 0 }) }), first: () => ({ count: async () => 0 }) }),
+    evaluate: async (_f, [sel, re]) => (sel === "main button" ? buttons : ["Evaluations"]).filter((t) => !re || new RegExp(re, "i").test(t)).length };
+  const take = { cut() {}, normal() {}, pages: { dash: page }, box: async (_c, { sel, re }) => page.evaluate(null, [sel, re]) };
+  const s = { cfg: { dashboard: "https://dash.invalid" }, take, cam: async () => page, run: async () => {} };
+  await MODULES.m8.exercises.find((e) => e.id === "m8-ex1").run(s);
+}
+await m8ex1("No evaluation runs\nStart evaluation run", ["Start evaluation run"]);
+await m8ex1("Evaluation runs\narc_easy  Completed\nStart evaluation run", ["Start evaluation run"]);
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("recorder test: PASS");

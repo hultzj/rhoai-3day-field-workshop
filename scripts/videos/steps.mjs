@@ -261,9 +261,10 @@ export const MODULES = {
   m8: { dbSecret: true, page: "10-module-08-evalhub", title: "Module 8 · Evaluate with EvalHub", exercises: [
     { id: "m8-ex1", title: "Exercise 1 · Deploy EvalHub", intro: "One CR; evaluations go to its REST API.",
       run: async (s) => { await s.run(0, { why: "EvalHub to start", expect: [T("phase Ready, providers", "EvalHub ready"), T("^MLflow: https://mlflow\\.", "results go to MLflow", "info"), T("evalhub-ws-eval-job", "the jobs' identity", "info"), T("odh-dashboard-config patched", "Evaluations page on", "info")] });
-        await dashUntil(s, "/evaluation/ws-eval", "No evaluation runs");
+        // empty on a first run; a re-run of the module lists the runs already made
+        await dashUntil(s, "/evaluation/ws-eval", "No evaluation runs|Start evaluation run");
         await boxIn(s, "dash", "nav a", "^Evaluations", "Develop & train → Evaluations", "info");
-        await boxIn(s, "dash", "main *", "^No evaluation runs$", "the page is a client of your EvalHub"); } },
+        await boxIn(s, "dash", "main button", "^Start evaluation run$", "the page is a client of your EvalHub"); } },
     { id: "m8-ex2", title: "Exercise 2 · What can it run?", intro: "Providers and benchmarks, from the API.",
       run: async (s) => { await s.run(1, { expect: [T("jobs\\s+\\(no token\\): 401", "API protected", "warn"), T("lm_evaluation_harness: \\d+ benchmarks", "LM Evaluation Harness"), T('"id": "arc_easy"', "our benchmark", "info")] });
         const p = await dashUntil(s, "/evaluation/ws-eval", "Start evaluation run");

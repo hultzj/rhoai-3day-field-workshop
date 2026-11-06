@@ -144,15 +144,13 @@ Every line must print `PASS`. Fix any `FAIL` before participants arrive.
   variables and helpers are then gone: participants re-run the current module from its first
   exercise (see _How the exercises build on each other_ on the Prerequisites page).
   The timeout is `WEB_TERMINAL_IDLE_TIMEOUT` (default `15m`) in the `web-terminal-exec` template in
-  `openshift-operators`. To lengthen it for one participant's existing terminal, they (the workspace's
-  creator) run the following; the terminal restarts once. Verified on the test cluster: the exec
-  container then runs with `WEB_TERMINAL_IDLE_TIMEOUT=240m`.
+  `openshift-operators`. To lengthen it, each participant runs this in their own terminal (Web
+  Terminal's `wtoctl` changes only the caller's workspace; the terminal restarts once). Verified on
+  the RHDP order: the workspace then carries `WEB_TERMINAL_IDLE_TIMEOUT=4h`.
 +
 [source,bash]
 ----
-W=$(oc get devworkspace -n openshift-terminal -o name | head -1)
-oc patch "$W" -n openshift-terminal --type json -p '[{"op":"add","path":"/spec/template/components/1/plugin/components",
-  "value":[{"name":"web-terminal-exec","container":{"env":[{"name":"WEB_TERMINAL_IDLE_TIMEOUT","value":"240m"}]}}]}]'
+wtoctl set timeout 4h
 ----
 * *DNS for `maas.<domain>`.* The ingress operator publishes the record within seconds and the Web
   Terminal resolves it at once; laptops with cached negative answers may need several minutes.
