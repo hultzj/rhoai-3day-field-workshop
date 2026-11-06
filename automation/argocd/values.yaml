@@ -14,6 +14,14 @@ lab:
   namespace: ws-models
 
 # Operators the workshop assumes, installed but not configured (components/platform).
+# RHDP order preparation (components/order-prep): enable kserve, modelregistry and trustyai on the
+# order's DataScienceCluster and add the GPU node. auto = only when the order injects guid (an RHDP
+# order); true or false to force it. The GPU MachineSet it creates is not removed by teardown.
+orderPrep:
+  enabled: auto
+  namespace: ws-order-prep
+  values: {}
+
 platform:
   enabled: true
   # Argo CD's destination for the child. Every platform resource names its own namespace, so this

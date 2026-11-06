@@ -144,4 +144,108 @@ apps_line -u LAB_APP BOOT=1 RHDP=1 APPS="${boot_apps}field-content OutOfSync/Deg
 apps_line LAB_APP=field-content BOOT=1 RHDP=1 APPS="$rhdp_apps" | grep -q '^PASS' || fail "an explicit LAB_APP is not honoured"
 apps_line -u LAB_APP RHDP=1 APPS="$boot_apps" | grep -q '^FAIL' || fail "verify passes an RHDP order whose field-content children are missing"
 unset -f oc
+
+# order-prep runs on an RHDP order (guid injected) and never on make bootstrap unless forced.
+apps() { helm template field-content automation/argocd -f automation/argocd/values.yaml --set deployer.domain=apps.example.com "$@"; }
+grep -q 'name: field-content-order-prep' <<<"$(apps)" && fail "order-prep rendered without an RHDP order"
+grep -q 'name: field-content-order-prep' <<<"$(apps --set guid=abc12-1)" || fail "order-prep missing on an RHDP order"
+grep -q 'name: field-content-order-prep' <<<"$(apps --set guid=abc12-1 --set orderPrep.enabled=false)" && fail "orderPrep.enabled=false ignored"
+grep -q 'name: field-content-order-prep' <<<"$(apps --set orderPrep.enabled=true)" || fail "orderPrep.enabled=true ignored"
+prep=$(helm template field-content automation/argocd/components/order-prep --set partOf=field-content)
+grep -A6 'kind: Namespace' <<<"$prep" | grep -q 'app.kubernetes.io/part-of: field-content' || fail "order-prep namespace lacks the lab's part-of label"
+for c in kserve modelregistry trustyai; do grep -q "\\\\\"$c\\\\\":{\\\\\"managementState\\\\\":\\\\\"Managed\\\\\"}" <<<"$prep" || fail "order-prep does not enable $c"; done
+grep -q 'INSTANCE=g6.2xlarge' <<<"$prep" || fail "order-prep GPU instance type is not g6.2xlarge"
+grep -q 'name: add-gpu-node' <<<"$(helm template t automation/argocd/components/order-prep --set partOf=x --set gpu.enabled=false)" && fail "gpu.enabled=false still adds the GPU node"
+
+# The GPU Job's script, run with oc stubbed: it skips when a -gpu-l4 MachineSet exists, and otherwise
+# creates one tainted g6.2xlarge copied from the first worker MachineSet.
+gpujob=$(helm template t automation/argocd/components/order-prep --set partOf=field-content |
+  python3 -c 'import json,sys
+for l in sys.stdin:
+    l = l.strip()
+    if l.startswith("command:") and "add-gpu" not in l and "-gpu-l4" in l: print(json.loads(l[len("command:"):])[2])')
+[ -n "$gpujob" ] || fail "could not extract the GPU Job's script"
+stub=$(mktemp -d)
+cat > "$stub/oc" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "get machinesets -n openshift-machine-api -o name") printf '%b' "$MS" ;;
+  get\ machineset.machine.openshift.io/*-o\ json) cat <<'J'
+{"metadata":{"name":"c-worker-us-east-2a","uid":"u","resourceVersion":"1","labels":{}},"spec":{"replicas":0,
+ "selector":{"matchLabels":{"machine.openshift.io/cluster-api-machineset":"c-worker-us-east-2a"}},
+ "template":{"metadata":{"labels":{"machine.openshift.io/cluster-api-machineset":"c-worker-us-east-2a"}},
+  "spec":{"providerSpec":{"value":{"instanceType":"m5a.4xlarge","blockDevices":[{"ebs":{"volumeSize":120}}]}}}}},"status":{}}
+J
+  ;;
+  "create -f -") cat > "$CREATED"; echo created ;;
+  *) echo "unexpected oc $*" >&2; exit 1 ;;
+esac
+SH
+chmod +x "$stub/oc"
+out=$(MS='machineset.machine.openshift.io/c-gpu-l4-us-east-2a\n' CREATED="$stub/c1" PATH="$stub:$PATH" bash -ec "$gpujob" 2>&1) || fail "GPU Job failed with a GPU MachineSet present: $out"
+[ ! -e "$stub/c1" ] || fail "GPU Job created a second GPU MachineSet"
+out=$(MS='machineset.machine.openshift.io/c-worker-us-east-2a\n' CREATED="$stub/c2" PATH="$stub:$PATH" bash -ec "$gpujob" 2>&1) || fail "GPU Job failed: $out"
+python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); s=m["spec"]; p=s["template"]["spec"]
+assert m["metadata"]["name"]=="c-gpu-l4-us-east-2a" and s["replicas"]==1
+assert p["providerSpec"]["value"]["instanceType"]=="g6.2xlarge" and p["providerSpec"]["value"]["blockDevices"][0]["ebs"]["volumeSize"]==200
+assert p["taints"]==[{"key":"nvidia.com/gpu","value":"True","effect":"NoSchedule"}]
+assert s["selector"]["matchLabels"]["machine.openshift.io/cluster-api-machineset"]=="c-gpu-l4-us-east-2a"
+assert m["metadata"]["labels"]["app.kubernetes.io/part-of"]=="field-content" and "uid" not in m["metadata"] and "status" not in m' "$stub/c2" ||
+  fail "GPU Job's MachineSet is not the tainted g6.2xlarge copy"
+rm -rf "$stub"
+
+# The GPU Job stops, creating nothing, when listing MachineSets fails.
+# Only the first listing fails (a transient error); later calls succeed and could lead to a create.
+gstub=$(mktemp -d)
+cat > "$gstub/oc" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "get machinesets -n openshift-machine-api -o name") [ -e "$SEEN" ] || { touch "$SEEN"; exit 1; }; printf 'machineset.machine.openshift.io/c-worker-us-east-2a\n' ;;
+  get\ machineset.machine.openshift.io/*) echo '{"metadata":{"name":"c-worker-us-east-2a"},"spec":{"selector":{"matchLabels":{}},"template":{"metadata":{"labels":{}},"spec":{"providerSpec":{"value":{"blockDevices":[{"ebs":{}}]}}}}}}' ;;
+  "create -f -") touch "$CREATED" ;;
+esac
+SH
+chmod +x "$gstub/oc"; export SEEN="$gstub/seen"
+CREATED="$gstub/made" PATH="$gstub:$PATH" bash -ec "$gpujob" >/dev/null 2>&1 && fail "GPU Job succeeded although listing MachineSets failed"
+[ ! -e "$gstub/made" ] || fail "GPU Job created a MachineSet after a failed listing"
+rm -rf "$gstub"
+
+# The DSC Job patches every DataScienceCluster and fails when a patch fails.
+dscjob=$(helm template t automation/argocd/components/order-prep --set partOf=field-content |
+  python3 -c 'import json,sys
+for l in sys.stdin:
+    l = l.strip()
+    if l.startswith("command:") and "datasciencecluster" in l: print(json.loads(l[len("command:"):])[2])')
+dstub=$(mktemp -d)
+printf '#!/usr/bin/env bash\ncase "$*" in "get datasciencecluster -o name") printf "%%b" "$DSCS";; "patch "*) echo "$2" >> "$LOG"; [ "$2" != "${FAILON:-none}" ];; *) exit 1;; esac\n' > "$dstub/oc"; chmod +x "$dstub/oc"
+DSCS='datasciencecluster/a\ndatasciencecluster/b\n' LOG="$dstub/log" PATH="$dstub:$PATH" bash -ec "$dscjob" >/dev/null 2>&1 || fail "DSC Job failed"
+[ "$(tr '\n' ' ' < "$dstub/log")" = "datasciencecluster/a datasciencecluster/b " ] || fail "DSC Job did not patch every DataScienceCluster"
+DSCS='datasciencecluster/a\ndatasciencecluster/b\n' LOG="$dstub/log2" FAILON=datasciencecluster/a PATH="$dstub:$PATH" bash -ec "$dscjob" >/dev/null 2>&1 && fail "DSC Job succeeded although a patch failed"
+DSCS='' LOG="$dstub/log3" PATH="$dstub:$PATH" bash -ec "$dscjob" >/dev/null 2>&1 && fail "DSC Job succeeded with no DataScienceCluster"
+rm -rf "$dstub"
+
+# verify's GPU check is not fooled by SIGPIPE: oc prints the taint first, then a large output.
+oc() { case "$*" in "get nodes"*) echo "nvidia.com/gpu"; seq 1 200000 ;; *) return 1 ;; esac; }
+export -f oc
+gpuline=$(LAB_APP=x bash automation/verify.sh 2>/dev/null | grep 'a GPU node tainted' || true)
+unset -f oc
+[ "$gpuline" = "PASS: a GPU node tainted nvidia.com/gpu exists" ] || fail "verify's GPU check fails on a large node list ($gpuline)"
+
+# The manual helper: skips when any -gpu-l4 MachineSet exists, and stops when listing fails.
+hstub=$(mktemp -d)
+cat > "$hstub/oc" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "get machinesets -n openshift-machine-api -o name") [ -n "$FAIL" ] && exit 1; printf '%b' "$MS" ;;
+  "get machineset c-worker-us-east-2a -n openshift-machine-api -o json") echo '{"metadata":{"name":"c-worker-us-east-2a"},"spec":{"selector":{"matchLabels":{}},"template":{"metadata":{"labels":{}},"spec":{"providerSpec":{"value":{"blockDevices":[{"ebs":{}}]}}}}}}' ;;
+  "create -f -") touch "$CREATED" ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$hstub/oc"
+out=$(echo y | MS='machineset.machine.openshift.io/c-gpu-l4-us-east-2a\n' CREATED="$hstub/h1" PATH="$hstub:$PATH" bash automation/gpu-machineset.sh c-worker-us-east-2a 2>&1) || fail "helper failed with a GPU MachineSet present: $out"
+grep -q 'already present' <<<"$out" && [ ! -e "$hstub/h1" ] || fail "helper did not skip an existing -gpu-l4 MachineSet"
+echo y | FAIL=1 CREATED="$hstub/h2" PATH="$hstub:$PATH" bash automation/gpu-machineset.sh c-worker-us-east-2a >/dev/null 2>&1 && fail "helper succeeded although listing failed"
+[ ! -e "$hstub/h2" ] || fail "helper created a MachineSet after a failed listing"
+rm -rf "$hstub"
 echo "selftest: PASS"

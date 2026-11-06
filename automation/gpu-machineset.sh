@@ -7,7 +7,9 @@ NS=openshift-machine-api
 INSTANCE=${INSTANCE:-g6.2xlarge}
 src=${1:-$(oc get machinesets -n "$NS" -o name | grep -m1 worker | cut -d/ -f2)}
 [[ -n $src ]] || { echo "no worker MachineSet found; pass one as the first argument" >&2; exit 1; }
-existing=$(oc get machinesets -n "$NS" -l app.kubernetes.io/part-of=rhoai-3day-field-workshop -o name)
+# Same test as the order-prep Job, so a MachineSet it created (part-of=field-content) counts too.
+ms=$(oc get machinesets -n "$NS" -o name)   # set -e: a failed listing stops here
+existing=$(grep -- '-gpu-l4' <<<"$ms" || true)
 [[ -z $existing ]] || { echo "already present: $existing"; exit 0; }
 manifest=$(oc get machineset "$src" -n "$NS" -o json | jq --arg inst "$INSTANCE" '
   (.metadata.name | if test("-worker-") then sub("-worker-"; "-gpu-l4-") else . + "-gpu-l4" end) as $name

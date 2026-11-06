@@ -62,9 +62,11 @@ prints the MachineSet and asks before creating it.
 When the order shows *Running*, from a shell logged in as the order's `admin` user (the order
 replaces kubeadmin with Keycloak SSO while it provisions):
 
-. Add the GPU node: `bash automation/gpu-machineset.sh`.
-. The order's OpenShift AI has `kserve`, `modelregistry` and `trustyai` set to `Removed`; set them
-  to `Managed`:
+. Nothing to do for the GPU node and OpenShift AI: on an RHDP order the chart's `order-prep` step
+  sets `kserve`, `modelregistry` and `trustyai` to `Managed` on the order's DataScienceCluster and
+  adds one `g6.2xlarge` GPU node (billed while it runs; the node joins in about 10 minutes). Watch
+  `oc get jobs -n ws-order-prep` (both `Complete`) and `make -C automation verify`. If a Job fails
+  (for example on AWS quota), do the same by hand: `bash automation/gpu-machineset.sh`, and
 +
 [source,bash]
 ----

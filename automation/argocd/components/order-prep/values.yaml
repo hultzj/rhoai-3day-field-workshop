@@ -1,0 +1,13 @@
+# Set by the parent chart.
+partOf: ""
+argocdNamespace: openshift-gitops
+namespace: ws-order-prep
+# The cluster's own oc image (it has python3; no jq).
+# shortcut: a moving tag of the cluster's release payload, matching its version; pin a digest if a
+# lab must survive cluster upgrades unchanged.
+cliImage: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+components: [kserve, modelregistry, trustyai]
+gpu:
+  enabled: true
+  instanceType: g6.2xlarge
+  volumeSize: 200
