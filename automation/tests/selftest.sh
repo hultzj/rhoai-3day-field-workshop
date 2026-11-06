@@ -230,4 +230,22 @@ export -f oc
 gpuline=$(LAB_APP=x bash automation/verify.sh 2>/dev/null | grep 'a GPU node tainted' || true)
 unset -f oc
 [ "$gpuline" = "PASS: a GPU node tainted nvidia.com/gpu exists" ] || fail "verify's GPU check fails on a large node list ($gpuline)"
+
+# The manual helper: skips when any -gpu-l4 MachineSet exists, and stops when listing fails.
+hstub=$(mktemp -d)
+cat > "$hstub/oc" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  "get machinesets -n openshift-machine-api -o name") [ -n "$FAIL" ] && exit 1; printf '%b' "$MS" ;;
+  "get machineset c-worker-us-east-2a -n openshift-machine-api -o json") echo '{"metadata":{"name":"c-worker-us-east-2a"},"spec":{"selector":{"matchLabels":{}},"template":{"metadata":{"labels":{}},"spec":{"providerSpec":{"value":{"blockDevices":[{"ebs":{}}]}}}}}}' ;;
+  "create -f -") touch "$CREATED" ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$hstub/oc"
+out=$(echo y | MS='machineset.machine.openshift.io/c-gpu-l4-us-east-2a\n' CREATED="$hstub/h1" PATH="$hstub:$PATH" bash automation/gpu-machineset.sh c-worker-us-east-2a 2>&1) || fail "helper failed with a GPU MachineSet present: $out"
+grep -q 'already present' <<<"$out" && [ ! -e "$hstub/h1" ] || fail "helper did not skip an existing -gpu-l4 MachineSet"
+echo y | FAIL=1 CREATED="$hstub/h2" PATH="$hstub:$PATH" bash automation/gpu-machineset.sh c-worker-us-east-2a >/dev/null 2>&1 && fail "helper succeeded although listing failed"
+[ ! -e "$hstub/h2" ] || fail "helper created a MachineSet after a failed listing"
+rm -rf "$hstub"
 echo "selftest: PASS"
