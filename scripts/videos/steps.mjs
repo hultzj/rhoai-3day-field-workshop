@@ -80,6 +80,7 @@ export const MODULES = {
         s.take.cut();
         await c.goto(s.cfg.console, { waitUntil: "domcontentloaded" });
         await sleep(9000);
+        await dismissModals(c);  // a first login opens "Welcome to the new OpenShift experience!": Skip tour
         s.take.normal();
         const btn = c.locator('button[aria-label="Command line terminal"]').filter({ visible: true }).first();
         s.take.cut(); await btn.waitFor({ state: "visible", timeout: 60000 }); await sleep(1500); s.take.normal();

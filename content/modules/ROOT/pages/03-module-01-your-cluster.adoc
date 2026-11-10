@@ -51,6 +51,8 @@ would hand your cluster-admin rights to anyone with the URL.
 .Video: this exercise on the test cluster, run as a participant (waits sped up)
 video::m1-ex1.mp4[width=100%]
 
+. If the console opens with *Welcome to the new OpenShift experience!* (it does on your first login),
+  click *Skip tour*.
 . In the OpenShift console, click the *Command line terminal* icon (*>_*) in the top bar. In a
   narrow browser window the top bar folds it into the *Utility menu* (*⋮*).
 . The *OpenShift command line terminal* panel opens at the bottom with *Initialize terminal*.
