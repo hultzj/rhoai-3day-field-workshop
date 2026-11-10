@@ -310,7 +310,7 @@ with `acc=0.56` and the same `mlflow_experiment`, and `granite-arc-easy-badkey` 
 Back on the *Evaluations* page, select `granite-arc-easy-gui` and `granite-arc-easy` and click
 *Compare*.
 
-Expected result: *Comparing granite-arc-easy-gui and granite-arc-easy*: MLflow's run comparison, with
+Expected result: *Comparing granite-arc-easy-gui and granite-arc-easy* (the two names in either order): MLflow's run comparison, with
 plots of `acc` and `duration_seconds`, both runs in experiment `granite-evals`, and their parameters
 side by side. Same model, same 50 questions, same score: whether you start it from the dashboard or
 with `curl`, it is the same EvalHub job.
