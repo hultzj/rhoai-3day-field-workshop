@@ -318,9 +318,9 @@ export const MODULES = {
             const a = id("granite-arc-easy-gui"), b = id("granite-arc-easy"); return !!a && a !== "-" && a === b; } }] });
         const q = await dashUntil(s, "/evaluation/ws-eval", "granite-arc-easy-gui");
         const rows = q.locator("main tbody tr");
-        for (const name of ["granite-arc-easy-gui", "granite-arc-easy"]) await rows.filter({ has: q.locator("a", { hasText: new RegExp(`^${name}$`) }) }).locator("input[type=checkbox]").check();
+        for (const name of ["granite-arc-easy-gui", "granite-arc-easy"]) await rows.filter({ has: q.locator("a", { hasText: new RegExp(`^${name}$`) }) }).locator("input[type=checkbox]").first().check();  // newest; a re-run lists the name twice
         await q.getByRole("button", { name: "Compare" }).click();
-        await boxIn(s, "dash", "main *", "^Comparing granite-arc-easy-gui and granite-arc-easy$", "MLflow's run comparison"); } },
+        await boxIn(s, "dash", "main *", "^Comparing (granite-arc-easy-gui and granite-arc-easy|granite-arc-easy and granite-arc-easy-gui)$", "MLflow's run comparison"); } },
   ] },
 
   m9: { dbSecret: true, page: "11-module-09-guardrails", title: "Module 9 · Guard it with NeMo Guardrails", exercises: [
