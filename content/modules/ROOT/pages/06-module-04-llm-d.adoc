@@ -258,6 +258,13 @@ LLMInferenceService reports `condition met` for `Ready`. Its URL is
 `{model_name}-kserve-…` pods (`2/2`), one `{model_name}-kserve-router-scheduler-…` pod, the
 InferencePool `{model_name}-inference-pool` and the HTTPRoute `{model_name}-kserve-route`.
 
+NOTE: Testers sometimes saw two ReplicaSets for `{model_name}-kserve` (`oc get rs -n
+{model_namespace}`), or extra `{model_name}-kserve-…` pods for a while, some of them `Pending`. This is
+a timing effect, not a fault: KServe can update the Deployment once while it is still reconciling, so
+it rolls out a second time. The older ReplicaSet scales down to `0` by itself, and only two workload
+pods remain. If the `oc wait` above timed out meanwhile, run it again. Ask your facilitator only if a
+pod is still `Pending` after about 10 minutes, or if more than two workload pods keep running.
+
 In short: you wrote one resource; KServe generated the pool, the scheduler and the route.
 
 == Exercise 4: Read the scheduler's configuration

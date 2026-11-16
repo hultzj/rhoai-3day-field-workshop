@@ -194,5 +194,22 @@ assert.notDeepEqual(await m8ex6(good.replace('"threshold": 0.5', '"threshold": 0
 assert.notDeepEqual(await m8ex6(good.replace('acc=0.62  mlflow_experiment=7\ngranite-arc-easy ', 'acc=0.62  mlflow_experiment=8\ngranite-arc-easy ')), [], "runs in different experiments accepted");
 assert.notDeepEqual(await m8ex6(good.replaceAll('mlflow_experiment=7', 'mlflow_experiment=-')), [], "runs without an experiment accepted");
 
+// 15. Module 8's "Workspace context is required" remediation restarts EvalHub only after MLflow is Available:
+// restarting while MLflow is down repeats the failed one-shot probe and clears the SQLite job list.
+{
+  const html = fs.readFileSync(path.join(www, `${MODULES.m8.page}.html`), "utf8");
+  const blocks = [...html.matchAll(/<code class="language-bash[^"]*" data-lang="bash">([\s\S]*?)<\/code>/g)]
+    .map((m) => m[1].replace(/<[^>]+>/g, "").replace(/&[#a-z0-9]+;/g, (e) => ({ "&lt;": "<", "&gt;": ">", "&amp;": "&", "&quot;": '"', "&#39;": "'" })[e] ?? e));
+  const fix = blocks.filter((b) => b.includes("rollout restart deploy/evalhub"));
+  assert.equal(fix.length, 1, "expected one EvalHub restart remediation block in Module 8");
+  // The stub only answers a wait for MLflow's own Available condition; any other wait is flagged.
+  const stub = (waitRc) => `oc() { echo "oc $1 $2"; if [ "$1" = wait ]; then [ "$2" = mlflows.mlflow.opendatahub.io/mlflow ] && [ "$3" = --for=condition=Available ] || { echo BAD-WAIT; return 2; }; return ${waitRc}; fi; return 0; }`;
+  const runFix = (waitRc, block = fix[0]) => spawnSync("bash", ["-c", `${stub(waitRc)}\n${block}`], { encoding: "utf8" }).stdout;
+  assert.doesNotMatch(runFix(1), /rollout/, "EvalHub restarted although MLflow never became Available");
+  assert.match(runFix(0), /oc rollout restart[\s\S]*oc rollout status/, "EvalHub not restarted once MLflow was Available");
+  assert.doesNotMatch(runFix(0), /BAD-WAIT/, "the remediation does not wait for MLflow's Available condition");
+  assert.match(runFix(0, fix[0].replace("--for=condition=Available", "--for=condition=Available=false")), /BAD-WAIT/, "the stub accepted a wait on the wrong condition");
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("recorder test: PASS");

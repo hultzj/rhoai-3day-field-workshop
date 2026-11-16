@@ -70,6 +70,24 @@ TIP: For more room, open the same terminal full page in a new browser tab:
 link:https://console-openshift-console.{cluster_domain}/terminal[console-openshift-console.{cluster_domain}/terminal^].
 The step videos use that view.
 
+[WARNING]
+.If the *>_* icon is missing or the terminal never starts
+====
+Testers have seen the Web Terminal operator install in a broken state. The terminal icon is missing
+or the panel never reaches a prompt, and *Ecosystem* → *Installed Operators* → *Web Terminal* shows
+`There was an error loading operands for this operator` with `no owned CustomResourceDefinitions
+specified on CSV openshift-operators/web-terminal.v1.17.2` (the version may differ).
+
+To fix it, reinstall the operator. The workshop's Argo CD installed it and puts it back when it goes missing:
+
+. In *Ecosystem* → *Installed Operators*, select the project `openshift-operators` and click *Web Terminal*.
+. Click *Actions* → *Uninstall Operator* and confirm.
+. Wait a few minutes, until *Web Terminal* is listed again with status *Succeeded*.
+. Reload the console page and start the terminal as above.
+
+If it does not come back within about 10 minutes, ask your facilitator.
+====
+
 Then run:
 
 [source,bash,role="execute"]
@@ -139,7 +157,8 @@ oc get datasciencecluster -o jsonpath='{range .items[*].status.conditions[?(@.st
 
 Expected result: every listed CSV shows `Succeeded`: `nfd.4.20…`,
 `gpu-operator-certified.v{gpu_operator_version}`, `rhcl-operator.v1.4.3` with the `authorino-operator` and
-`limitador-operator` it depends on, `web-terminal.v1.17.1` and `rhods-operator.3.5.2` (OpenShift AI
+`limitador-operator` it depends on, `web-terminal.v1.17.…` (the patch version follows the operator
+channel) and `rhods-operator.3.5.2` (OpenShift AI
 {rhoai_version}). The DataScienceCluster conditions include `Ready`, `KserveReady`,
 `ModelRegistryReady` and `DashboardReady`. Operators are installed, but nothing is configured yet.
 

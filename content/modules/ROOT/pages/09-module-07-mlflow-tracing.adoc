@@ -237,6 +237,29 @@ Expected result: the job fails: the log shows `PERMISSION_DENIED` (alone, or ins
 experiment, followed by `job: failed`: the agent's ServiceAccount
 may call MaaS (it holds a key) but has no right to write to the `ws-agent` workspace.
 
+[WARNING]
+.If the command seems stuck
+====
+`run_agent` waits until the Job has succeeded or failed, without a time limit. Testers saw it keep
+waiting with no output. The agent's pod installs MLflow and the OpenAI client with `pip` before it
+runs, so the first run normally takes a minute or two. If nothing is printed after about five
+minutes, press *Ctrl+C* (*Ctrl*, not *Cmd*, also on a Mac) to get your prompt back. Your shell keeps
+`run_agent`, so nothing else is lost. Then see where the agent got to:
+
+[source,bash]
+----
+oc get pods -n ws-agent -l job-name=weather-agent
+oc logs job/weather-agent -n ws-agent --tail=20
+----
+
+* The log already contains `PERMISSION_DENIED`: you have this exercise's expected result. Continue
+  with Exercise 4. Its `run_agent` deletes the old Job first.
+* The pod is `Pending`, in `ImagePullBackOff`, or the log ends in a `pip` error: run `run_agent` again.
+  It deletes the Job and starts a fresh one.
+
+The same applies to the `run_agent` in Exercise 4.
+====
+
 == Exercise 4: Grant exactly the rights to trace, and run again
 
 .Video: this exercise on the test cluster, run as a participant (waits sped up)
