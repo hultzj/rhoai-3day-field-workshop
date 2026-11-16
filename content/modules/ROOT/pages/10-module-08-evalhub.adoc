@@ -211,6 +211,31 @@ Expected result: the gold subscription's token count so far, a job ID, a Kuberne
 `"acc_stderr": 0.0709…`, a `test` block `{"score": 0.56, "threshold": 0.5, "pass": true}`, and
 `"mlflow_experiment"` with the ID of the `granite-evals` experiment EvalHub created.
 
+[WARNING]
+.If a job fails with `Workspace context is required`
+====
+A tester's dashboard evaluations (*Start evaluation run*) worked on one day and failed the next with
+`Workspace context is required`, while MLflow was up. Jobs submitted through the API depend on
+the same EvalHub setting, so they can fail the same way. When EvalHub starts, it checks once whether MLflow uses
+workspaces. If MLflow does not answer at that moment, for example right after the cluster restarts,
+EvalHub keeps the wrong setting and stops sending the project as the MLflow workspace. To fix it,
+restart EvalHub while MLflow is healthy. Paste this as one command. The restart only runs once
+MLflow reports `Available`:
+
+[source,bash]
+----
+oc wait mlflows.mlflow.opendatahub.io/mlflow --for=condition=Available --timeout=300s &&
+  oc rollout restart deploy/evalhub -n ws-eval &&
+  oc rollout status deploy/evalhub -n ws-eval --timeout=300s
+----
+
+If the `oc wait` times out, MLflow itself is not healthy. Do not restart EvalHub yet, because it would
+make the same bad check again. Ask your facilitator. Once the restart has finished, submit the job again. This EvalHub keeps its job list in SQLite inside its pod, so the
+restart clears the list of earlier jobs. Their runs stay in MLflow. If you need them again (Exercise 6
+compares `granite-arc-easy` with the dashboard run), re-run the block above that submits
+`granite-arc-easy`, and Exercise 4 for `granite-arc-easy-badkey`.
+====
+
 What the numbers mean: the model answered about 56% of 50 easy science questions correctly, with a
 standard error of about 7 points, so a rerun on another 50 questions could plausibly score anywhere
 from about 0.42 to 0.70. The same benchmark against the internal endpoint on the test cluster scored
@@ -292,7 +317,8 @@ On the *Evaluations* page (project `ws-eval`):
   parameters as your API job.
 . Click *Start evaluation run*.
 
-Expected result: the list shows `granite-arc-easy-gui` as `Pending`, next to your earlier runs. Now
+Expected result: the list shows `granite-arc-easy-gui` as `Pending`, next to your earlier runs. If
+*Start evaluation run* fails with `Workspace context is required`, see the warning in Exercise 3. Now
 follow it from the terminal, through the same API:
 
 [source,bash,role="execute"]
